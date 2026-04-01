@@ -1,83 +1,149 @@
-# Smart Fetch - 智能网页抓取路由技能
+# Smart3W - 智能网页搜索与抓取工具
 
-[![AgentSkill](https://img.shields.io/badge/AgentSkill-1.0-blue)](https://agentskills.io)
 [![OpenClaw](https://img.shields.io/badge/OpenClaw-Compatible-green)](https://github.com/openclaw/openclaw)
+[![MIT](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
 
-自动选择最佳方式抓取网页内容，无需手动判断。支持自动回退：先尝试简单 HTTP，失败则自动升级到隐身浏览器。
+集 **SearXNG 网页搜索** 与 **智能网页抓取** 于一体的工具，支持自动降级和多种抓取策略。
 
-## 功能特点
+---
 
-- 🔄 **自动回退**：先 `scrapling get`，失败自动切换到 `stealthy-fetch`
-- 🛡️ **反爬绕过**：自动处理 Cloudflare 等反爬保护
-- ⚡ **智能选择**：根据网站特性自动选择最佳抓取方式
-- 📝 **多格式输出**：支持 Markdown、纯文本、HTML
+## 核心功能
+
+| 功能 | 说明 |
+|------|------|
+| 🔍 **网页搜索** | 基于 SearXNG，支持自定义实例，隐私友好 |
+| ⚡ **HTTP 抓取** | 最快方式抓取静态页面 |
+| 🌐 **浏览器渲染** | 支持 SPA / JS 重度页面 |
+| 🛡️ **反爬绕过** | 自动处理 Cloudflare 等反爬保护 |
+| 🔄 **智能降级** | 自动尝试最优方式，失败后逐级降级 |
+
+---
 
 ## 安装
 
+### 方式一：克隆到 OpenClaw Skills 目录
+
 ```bash
-# 克隆到技能目录
-git clone https://github.com/qaz364/smart-fetch-skill.git ~/.openclaw/workspace/.agents/skills/smart-fetch
+git clone https://github.com/kid941005/smart3w.git ~/.openclaw/skills/smart3w
 ```
 
+### 方式二：从其他 Skill 集成
+
+```bash
+# 复制脚本到你的 Skill 目录
+cp -r scripts/ /path/to/your-skill/
+```
+
+---
+
 ## 使用方法
-
-### 在 OpenClaw 中使用
-
-直接对 AI 说：
-- "抓取 https://example.com"
-- "帮我获取这个网页的内容"
-
-AI 会自动：
-1. 先尝试 `scrapling extract get`
-2. 失败则切换到 `scrapling stealthy-fetch`
 
 ### 命令行使用
 
 ```bash
-# 使用封装脚本
-~/.openclaw/workspace/.agents/skills/smart-fetch/scripts/fetch.sh "https://example.com"
+# ── 网页搜索 ──
+./scripts/fetch.sh search "关键词" [结果数量]
 
-# 或手动执行
-scrapling extract get "https://example.com" output.md
-scrapling extract stealthy-fetch "https://protected-site.com" output.html --headless
+# ── 智能抓取（推荐）──
+./scripts/fetch.sh smart "https://example.com" /tmp/output.md
+
+# ── HTTP 抓取（静态页面）──
+./scripts/fetch.sh get "https://example.com" /tmp/output.md
+
+# ── 浏览器渲染（SPA / JS 页面）──
+./scripts/fetch.sh fetch "https://spa-site.com" /tmp/output.md --headless
+
+# ── 反爬保护网站 ──
+./scripts/fetch.sh stealthy "https://protected-site.com" /tmp/output.html --solve-cloudflare
 ```
+
+---
 
 ## 工作流程
 
 ```
-用户请求 URL
-    ↓
-┌─────────────────────┐
-│ 1. scrapling get    │ (HTTP请求，快)
-└──────────┬──────────┘
-           ↓
-    成功 → 返回内容
-           │
-    失败 ↓
-┌─────────────────────┐
-│ 2. stealthy-fetch   │ (无头浏览器)
-└──────────┬──────────┘
-           ↓
-    成功 → 返回内容
-           │
-    失败 ↓
-    提示用户
+用户请求
+    │
+    ├── search → SearXNG 搜索 → 返回标题/URL/摘要
+    │
+    └── fetch
+            │
+            1. scrapling extract get (HTTP 请求，最快)
+            │      ✅ 成功 → 返回内容
+            │      ❌ 失败
+            2. scrapling stealthy-fetch (无头浏览器，绕过反爬)
+                   ✅ 成功 → 返回内容
+                   ❌ 失败 → 提示用户
 ```
+
+---
+
+## 输出格式
+
+根据文件后缀自动选择：
+
+| 后缀 | 格式 |
+|------|------|
+| `.md` | Markdown（推荐） |
+| `.txt` | 纯文本 |
+| `.html` | 原始 HTML |
+
+---
+
+## 环境变量
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `SEARXNG_INSTANCE` | `https://searxng.example.com:59826` | SearXNG 实例地址 |
+
+### 示例：使用自定义 SearXNG 实例
+
+```bash
+SEARXNG_INSTANCE="https://your-searxng.example.com" ./scripts/fetch.sh search "关键词"
+```
+
+---
+
+## 在 OpenClaw Agent 中使用
+
+直接对 AI 说：
+- "帮我搜索 XXX 相关信息"
+- "抓取 https://example.com 的内容"
+- "获取这个网页的正文"
+
+AI 会根据请求类型自动选择 search 或 fetch 模式。
+
+---
 
 ## 依赖
 
-- Python 3.10+
-- scrapling >= 0.4.2
-- Playwright 浏览器
+| 依赖 | 版本 | 说明 |
+|------|------|------|
+| Python | 3.10+ | 运行环境 |
+| scrapling | ≥ 0.4.2 | 网页抓取核心 |
+| Playwright | - | 浏览器渲染支持 |
 
 ```bash
+# 安装依赖
 pip install "scrapling[all]>=0.4.2"
 scrapling install --force
 ```
 
-## 技能规范
+---
 
-本技能遵循 [AgentSkill](https://agentskills.io/specification) 规范，兼容 OpenClaw、Claude Code 等智能体工具。
+## 项目结构
+
+```
+smart3w/
+├── SKILL.md          # OpenClaw Skill 元数据
+├── README.md         # 本文件
+├── LICENSE           # MIT 许可证
+└── scripts/
+    ├── fetch.sh      # 统一入口脚本
+    └── search.sh     # SearXNG 搜索脚本
+```
+
+---
 
 ## 许可证
 
