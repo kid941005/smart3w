@@ -1,5 +1,5 @@
 #!/bin/bash
-# smart-fetch 智能抓取脚本
+# smart3w 智能抓取脚本
 # 用法:
 #   ./fetch.sh search <关键词> [数量]   SearXNG 搜索
 #   ./fetch.sh get <URL> [输出文件]     快速抓取（HTTP）
@@ -70,7 +70,7 @@ case "$ACTION" in
             echo "或:   $0 search <关键词> [数量]" >&2
             exit 1
         fi
-        echo "=== Smart Fetch 智能抓取 ==="
+        echo "=== Smart3W 智能抓取 ==="
         echo "目标: $URL"
         echo ""
 

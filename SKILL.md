@@ -1,11 +1,11 @@
 ---
-name: smart-fetch
+name: smart3w
 description: 智能网页抓取路由 + SearXNG 搜索。自动尝试多种方式抓取网页内容：先 scrapling get，失败则自动回退到 stealthy-fetch。同时支持 SearXNG 网页搜索。用于需要可靠获取网页内容或搜索网页的场景。
-version: 1.1.0
+version: 1.2.0
 license: MIT
 ---
 
-# Smart Fetch - 智能抓取路由 + 搜索
+# Smart3W - 智能抓取路由 + 搜索
 
 集 SearXNG 搜索与网页抓取于一体的智能工具。
 
