@@ -2,7 +2,7 @@
 
 [![OpenClaw](https://img.shields.io/badge/OpenClaw-Compatible-green)](https://github.com/openclaw/openclaw)
 [![MIT](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-2.0.0-blue)](https://github.com/kid941005/smart3w/releases)
+[![Version](https://img.shields.io/badge/Version-2.1.0-blue)](https://github.com/kid941005/smart3w/releases)
 
 集 **SearXNG 网页搜索**、**Sitemap 解析** 与 **智能网页抓取** 于一体。
 
@@ -13,7 +13,8 @@
 | 特性 | 说明 |
 |------|------|
 | 🔍 **网页搜索** | SearXNG 驱动，隐私友好 |
-| 📄 **网页抓取** | 智能分层策略，稳定可靠 |
+| 📄 **网页抓取** | 分层策略架构，稳定可靠 |
+| 📱 **微信专取** | 自动识别微信文章，精准提取正文 |
 | 📦 **内容压缩** | readability-lxml 提取正文，节省 50-80% token |
 | 🗺️ **Sitemap** | 支持 Index 和 URL Set 格式 |
 | ⚙️ **可定制** | 支持自定义 UA、超时、重试次数 |
@@ -28,7 +29,7 @@ git clone https://github.com/kid941005/smart3w.git ~/.openclaw/skills/smart3w
 
 **依赖**：
 ```bash
-pip install "scrapling[all]>=0.4.2" "readability-lxml>=0.8.0"
+pip install "scrapling[all]>=0.4.2" "readability-lxml>=0.8.0" beautifulsoup4
 scrapling install --force
 ```
 
@@ -138,9 +139,8 @@ get/smart <URL>
     │
     ├─1─► curl ──────────────────────► [成功] ──┐
     │                                    │       │
-    │                              readability    │
-    │                                 压缩        │
-    │                                    │        │
+    │                              内容压缩        │
+    │                                 │        │
     └─2─► scrapling HTTP ──► [成功] ──┴────────┤
     │                                         │
     └─3─► scrapling stealthy ──► [成功] ──────┘
@@ -150,19 +150,29 @@ get/smart <URL>
 
 ---
 
-## 内容压缩
+## 微信文章提取
 
-默认启用 readability-lxml 提取正文，自动去除：
-- 导航栏、侧边栏、页脚
-- 广告、追踪脚本、CSS
-- HTML 标签和多余空白
+Smart3W 支持自动识别并优化提取微信公众号文章。
+
+**工作原理**：
+- URL 包含 `mp.weixin.qq.com` → 自动使用 BeautifulSoup 提取 `id='js_content'` 的正文
+- 其他网站 → 使用 readability-lxml 进行通用提取
 
 **压缩效果**：
 
 | 页面类型 | 原始 | 压缩后 | 节省 |
 |----------|------|--------|------|
 | 普通网页 | 100KB | 15KB | 85% |
-| 微信文章 | 2.8MB | 3.5KB | 99%+ |
+| 微信文章 | 2.8MB | 841B | 99%+ |
+
+---
+
+## 内容压缩
+
+默认启用 readability-lxml 提取正文，自动去除：
+- 导航栏、侧边栏、页脚
+- 广告、追踪脚本、CSS
+- HTML 标签和多余空白
 
 ---
 
