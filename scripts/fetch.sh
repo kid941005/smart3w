@@ -186,6 +186,57 @@ except Exception as e:
 }
 
 # =============================================================================
+# 内容压缩: 微信文章专用（BeautifulSoup + js_content）
+# =============================================================================
+_compress_wechat() {
+    local input="$1"
+    local output="$2"
+    
+    python3 -c "
+import sys, re
+from bs4 import BeautifulSoup
+
+try:
+    with open('$input', 'r', encoding='utf-8', errors='ignore') as f:
+        html = f.read()
+    
+    if not html.strip():
+        sys.exit(1)
+    
+    soup = BeautifulSoup(html, 'html.parser')
+    
+    # 移除干扰标签
+    for tag in soup.find_all(['script', 'style', 'nav', 'footer', 'header', 'aside']):
+        tag.decompose()
+    
+    # 微信文章正文在 id='js_content' 的 div 中
+    content_div = soup.find('div', id='js_content')
+    if content_div:
+        text = content_div.get_text(separator='\n', strip=True)
+        lines = [line.strip() for line in text.split('\n') if line.strip()]
+        text = '\n'.join(lines)
+    else:
+        # 备选：rich_media_content
+        main = soup.find('div', class_='rich_media_content')
+        if main:
+            text = main.get_text(separator='\n', strip=True)
+            lines = [line.strip() for line in text.split('\n') if line.strip()]
+            text = '\n'.join(lines)
+        else:
+            sys.exit(1)
+    
+    if text and len(text) > 50:
+        with open('$output', 'w', encoding='utf-8') as f:
+            f.write(text)
+        print('OK_WECHAT')
+    else:
+        sys.exit(1)
+except Exception as e:
+    sys.exit(1)
+" 2>/dev/null
+}
+
+# =============================================================================
 # 主抓取逻辑（策略循环）
 # =============================================================================
 do_fetch() {
@@ -216,21 +267,52 @@ do_fetch() {
     
     # 内容压缩
     if [[ $COMPRESS -eq 1 ]]; then
-        if _compress_html "$temp_raw" "$temp_compressed"; then
-            local raw_size=$(wc -c < "$temp_raw")
-            local compressed_size=$(wc -c < "$temp_compressed")
-            local ratio=$(( compressed_size * 100 / raw_size ))
-            mv "$temp_compressed" "$output"
-            rm -f "$temp_raw"
-            echo ""
-            _ok "抓取完成 → $output"
-            echo "   原始: ${raw_size}B | 压缩后: ${compressed_size}B | 保留: ${ratio}%"
+        # 检测是否为微信文章
+        if [[ "$url" == *"mp.weixin.qq.com"* ]]; then
+            _info "检测到微信文章，使用微信专用提取..."
+            if _compress_wechat "$temp_raw" "$temp_compressed"; then
+                local raw_size=$(wc -c < "$temp_raw")
+                local compressed_size=$(wc -c < "$temp_compressed")
+                local ratio=$(( compressed_size * 100 / raw_size ))
+                mv "$temp_compressed" "$output"
+                rm -f "$temp_raw"
+                echo ""
+                _ok "抓取完成 → $output"
+                echo "   原始: ${raw_size}B | 压缩后: ${compressed_size}B | 保留: ${ratio}%"
+            elif _compress_html "$temp_raw" "$temp_compressed"; then
+                local raw_size=$(wc -c < "$temp_raw")
+                local compressed_size=$(wc -c < "$temp_compressed")
+                local ratio=$(( compressed_size * 100 / raw_size ))
+                mv "$temp_compressed" "$output"
+                rm -f "$temp_raw"
+                echo ""
+                _ok "抓取完成 → $output"
+                echo "   原始: ${raw_size}B | 压缩后: ${compressed_size}B | 保留: ${ratio}%"
+            else
+                _warn "压缩失败，保留原始内容"
+                mv "$temp_raw" "$output"
+                rm -f "$temp_compressed"
+                echo ""
+                _ok "抓取完成(原始) → $output"
+            fi
         else
-            _warn "压缩失败，保留原始内容"
-            mv "$temp_raw" "$output"
-            rm -f "$temp_compressed"
-            echo ""
-            _ok "抓取完成(原始) → $output"
+            # 普通网页：先尝试 readability
+            if _compress_html "$temp_raw" "$temp_compressed"; then
+                local raw_size=$(wc -c < "$temp_raw")
+                local compressed_size=$(wc -c < "$temp_compressed")
+                local ratio=$(( compressed_size * 100 / raw_size ))
+                mv "$temp_compressed" "$output"
+                rm -f "$temp_raw"
+                echo ""
+                _ok "抓取完成 → $output"
+                echo "   原始: ${raw_size}B | 压缩后: ${compressed_size}B | 保留: ${ratio}%"
+            else
+                _warn "压缩失败，保留原始内容"
+                mv "$temp_raw" "$output"
+                rm -f "$temp_compressed"
+                echo ""
+                _ok "抓取完成(原始) → $output"
+            fi
         fi
     else
         mv "$temp_raw" "$output"
