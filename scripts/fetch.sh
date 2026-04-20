@@ -1,5 +1,10 @@
 #!/bin/bash
-# smart3w 智能抓取脚本
+# smart3w 智能抓取脚本 (优化版)
+# 优化内容：
+#   - 增加 curl fallback 降级机制
+#   - 优化临时文件命名避免冲突
+#   - 增加重试机制
+#   - 支持自定义 User-Agent
 # 用法:
 #   ./fetch.sh search <关键词> [数量]           SearXNG 搜索
 #   ./fetch.sh get <URL> [输出文件] [--no-compress]   快速抓取（HTTP）
@@ -15,10 +20,16 @@ SEARXNG_INSTANCE="${SEARXNG_INSTANCE:-https://searxng.hqgg.top:59826}"
 
 # 默认启用压缩
 COMPRESS=1
+# 默认 User-Agent
+USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+RETRY=2
+
 REMAINING=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --no-compress) COMPRESS=0; shift ;;
+        --ua) USER_AGENT="$2"; shift 2 ;;
+        --retry) RETRY="$2"; shift 2 ;;
         *)             REMAINING+=("$1"); shift ;;
     esac
 done
@@ -36,7 +47,6 @@ if not html.strip():
     sys.exit(1)
 try:
     doc = Document(html)
-    # 提取 HTML 摘要，再去掉所有标签得纯文本
     summary = doc.summary()
     text = re.sub(r'<[^>]+>', '', summary)
     text = re.sub(r'\s+', ' ', text).strip()
@@ -67,6 +77,80 @@ _report() {
 }
 
 # ----------------------------------------
+# curl 降级抓取
+# ----------------------------------------
+_curl_fetch() {
+    local url="$1"
+    local output="$2"
+    local attempt=1
+    local max_attempts=${RETRY:-2}
+    
+    while [ $attempt -le $max_attempts ]; do
+        if [ $attempt -gt 1 ]; then
+            echo "   curl 重试 ($attempt/$max_attempts)..."
+            sleep 1
+        fi
+        
+        # curl 抓取，带完整 UA 和常见请求头
+        curl -L -s -o "$output" \
+            -A "$USER_AGENT" \
+            -H "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8" \
+            -H "Accept-Language: zh-CN,zh;q=0.9,en;q=0.8" \
+            -H "Accept-Encoding: gzip, deflate, br" \
+            --compressed \
+            --connect-timeout 10 \
+            --max-time 30 \
+            "$url" 2>/dev/null
+        
+        if [ -s "$output" ]; then
+            return 0
+        fi
+        
+        attempt=$((attempt + 1))
+    done
+    
+    return 1
+}
+
+# ----------------------------------------
+# scrapling 抓取（带重试）
+# ----------------------------------------
+_scrapling_fetch() {
+    local action="$1"
+    local url="$2"
+    local output="$3"
+    local attempt=1
+    local max_attempts=${RETRY:-2}
+    
+    while [ $attempt -le $max_attempts ]; do
+        if [ $attempt -gt 1 ]; then
+            echo "   scrapling 重试 ($attempt/$max_attempts)..."
+            sleep 1
+        fi
+        
+        case "$action" in
+            get)
+                scrapling extract get "$url" "$output" 2>/dev/null
+                ;;
+            fetch)
+                scrapling extract fetch "$url" "$output" --headless 2>/dev/null
+                ;;
+            stealthy)
+                scrapling extract stealthy-fetch "$url" "$output" --headless --solve-cloudflare 2>/dev/null
+                ;;
+        esac
+        
+        if [ -s "$output" ]; then
+            return 0
+        fi
+        
+        attempt=$((attempt + 1))
+    done
+    
+    return 1
+}
+
+# ----------------------------------------
 case "$ACTION" in
     search)
         QUERY="$1"
@@ -82,22 +166,42 @@ case "$ACTION" in
         URL="$1"
         OUTPUT="${2:-/tmp/fetch_result.md}"
         if [ -z "$URL" ]; then
-            echo "用法: $0 get <URL> [输出文件] [--no-compress]" >&2
+            echo "用法: $0 get <URL> [输出文件] [--no-compress] [--ua 'User-Agent'] [--retry N]" >&2
             exit 1
         fi
+        
         echo "=== HTTP 抓取 ==="
         echo "目标: $URL"
-        TEMP_RAW="/tmp/smart3w_raw_$$.html"
-        scrapling extract get "$URL" "$TEMP_RAW" 2>/dev/null
-        RAW_BYTES=$(wc -c < "$TEMP_RAW" 2>/dev/null || echo 0)
-        if [ -s "$TEMP_RAW" ]; then
+        
+        # 生成唯一临时文件
+        TEMP_RAW="/tmp/smart3w_raw_$(date +%s)_${RANDOM}.html"
+        
+        # 策略1: scrapling
+        echo "▶ 策略1: scrapling..."
+        if _scrapling_fetch "get" "$URL" "$TEMP_RAW"; then
+            RAW_BYTES=$(wc -c < "$TEMP_RAW")
+            SUCCESS=1
+        else
+            RAW_BYTES=0
+            SUCCESS=0
+        fi
+        
+        # 策略2: curl 降级
+        if [ "$SUCCESS" -eq 0 ]; then
+            echo "⚠️ scrapling 失败，尝试 curl..."
+            if _curl_fetch "$URL" "$TEMP_RAW"; then
+                RAW_BYTES=$(wc -c < "$TEMP_RAW")
+                SUCCESS=1
+                echo "   ✅ curl 成功"
+            fi
+        fi
+        
+        if [ "$SUCCESS" -eq 1 ] && [ -s "$TEMP_RAW" ]; then
             if [ "$COMPRESS" -eq 1 ]; then
-                # 尝试压缩，结果写入 OUTPUT；成功则删除 RAW
                 if _compress_html < "$TEMP_RAW" > "$OUTPUT" 2>/dev/null && [ -s "$OUTPUT" ]; then
                     rm -f "$TEMP_RAW"
                     _report "$RAW_BYTES" "$OUTPUT"
                 else
-                    # 压缩失败或为空，保留原始 HTML
                     mv "$TEMP_RAW" "$OUTPUT"
                     _report 0 "$OUTPUT"
                 fi
@@ -116,15 +220,33 @@ case "$ACTION" in
         URL="$1"
         OUTPUT="${2:-/tmp/fetch_result.md}"
         if [ -z "$URL" ]; then
-            echo "用法: $0 fetch <URL> [输出文件] [--no-compress]" >&2
+            echo "用法: $0 fetch <URL> [输出文件] [--no-compress] [--ua 'User-Agent'] [--retry N]" >&2
             exit 1
         fi
         echo "=== 浏览器渲染抓取 ==="
         echo "目标: $URL"
-        TEMP_RAW="/tmp/smart3w_raw_$$.html"
-        scrapling extract fetch "$URL" "$TEMP_RAW" --headless 2>/dev/null
-        RAW_BYTES=$(wc -c < "$TEMP_RAW" 2>/dev/null || echo 0)
-        if [ -s "$TEMP_RAW" ]; then
+        
+        TEMP_RAW="/tmp/smart3w_raw_$(date +%s)_${RANDOM}.html"
+        
+        echo "▶ 策略1: scrapling fetch..."
+        if _scrapling_fetch "fetch" "$URL" "$TEMP_RAW"; then
+            RAW_BYTES=$(wc -c < "$TEMP_RAW")
+            SUCCESS=1
+        else
+            RAW_BYTES=0
+            SUCCESS=0
+        fi
+        
+        if [ "$SUCCESS" -eq 0 ]; then
+            echo "⚠️ scrapling 失败，尝试 curl..."
+            if _curl_fetch "$URL" "$TEMP_RAW"; then
+                RAW_BYTES=$(wc -c < "$TEMP_RAW")
+                SUCCESS=1
+                echo "   ✅ curl 成功"
+            fi
+        fi
+        
+        if [ "$SUCCESS" -eq 1 ] && [ -s "$TEMP_RAW" ]; then
             if [ "$COMPRESS" -eq 1 ]; then
                 if _compress_html < "$TEMP_RAW" > "$OUTPUT" 2>/dev/null && [ -s "$OUTPUT" ]; then
                     rm -f "$TEMP_RAW"
@@ -148,15 +270,33 @@ case "$ACTION" in
         URL="$1"
         OUTPUT="${2:-/tmp/fetch_result.md}"
         if [ -z "$URL" ]; then
-            echo "用法: $0 stealthy <URL> [输出文件] [--no-compress]" >&2
+            echo "用法: $0 stealthy <URL> [输出文件] [--no-compress] [--ua 'User-Agent'] [--retry N]" >&2
             exit 1
         fi
         echo "=== 隐身浏览器抓取（绕过反爬）==="
         echo "目标: $URL"
-        TEMP_RAW="/tmp/smart3w_raw_$$.html"
-        scrapling extract stealthy-fetch "$URL" "$TEMP_RAW" --headless --solve-cloudflare 2>/dev/null
-        RAW_BYTES=$(wc -c < "$TEMP_RAW" 2>/dev/null || echo 0)
-        if [ -s "$TEMP_RAW" ]; then
+        
+        TEMP_RAW="/tmp/smart3w_raw_$(date +%s)_${RANDOM}.html"
+        
+        echo "▶ 策略1: scrapling stealthy..."
+        if _scrapling_fetch "stealthy" "$URL" "$TEMP_RAW"; then
+            RAW_BYTES=$(wc -c < "$TEMP_RAW")
+            SUCCESS=1
+        else
+            RAW_BYTES=0
+            SUCCESS=0
+        fi
+        
+        if [ "$SUCCESS" -eq 0 ]; then
+            echo "⚠️ scrapling 失败，尝试 curl..."
+            if _curl_fetch "$URL" "$TEMP_RAW"; then
+                RAW_BYTES=$(wc -c < "$TEMP_RAW")
+                SUCCESS=1
+                echo "   ✅ curl 成功"
+            fi
+        fi
+        
+        if [ "$SUCCESS" -eq 1 ] && [ -s "$TEMP_RAW" ]; then
             if [ "$COMPRESS" -eq 1 ]; then
                 if _compress_html < "$TEMP_RAW" > "$OUTPUT" 2>/dev/null && [ -s "$OUTPUT" ]; then
                     rm -f "$TEMP_RAW"
@@ -206,7 +346,6 @@ try:
     SM = "{http://www.sitemaps.org/schemas/sitemap/0.9}"
 
     urls = []
-    # Sitemap Index
     if "sitemapindex" in root.tag:
         for sm in root.findall(f"{SM}sitemap"):
             loc = sm.find(f"{SM}loc")
@@ -216,7 +355,6 @@ try:
             loc = sm.find("loc")
             if loc is not None and loc.text and loc.text not in [u[2] for u in urls]:
                 urls.append(("index", "", loc.text))
-    # URL Set
     else:
         for u in root.findall(f"{SM}url"):
             loc = u.find(f"{SM}loc")
@@ -257,17 +395,16 @@ PYEOF
         URL="$1"
         OUTPUT="${2:-/tmp/fetch_result.md}"
         if [ -z "$URL" ]; then
-            echo "用法: $0 smart <URL> [输出文件] [--no-compress]" >&2
+            echo "用法: $0 smart <URL> [输出文件] [--no-compress] [--ua 'User-Agent'] [--retry N]" >&2
             echo "或:   $0 search <关键词> [数量]" >&2
             echo "或:   $0 sitemap <url> [最大条数]" >&2
             exit 1
         fi
-        echo "=== Smart3W 智能抓取（并行竞争）==="
+        echo "=== Smart3W 智能抓取（优化版）==="
         echo "目标: $URL"
         echo ""
 
-        # Cloudflare 预检测（快速请求，约0.5s）
-        # 判断：__cfduid/cf-mitigations 出现必然需要解CF；cf-ray 存在时非HIT缓存也需要
+        # Cloudflare 预检测
         _has_cf() {
             result=$(python3 -c "
 import sys, urllib.request, ssl
@@ -292,7 +429,7 @@ except:
             echo "$result"
         }
 
-        echo -n "[0/3] 检测 Cloudflare... "
+        echo -n "[检测] Cloudflare... "
         if [ "$(_has_cf)" = "1" ]; then
             echo "检测到 ✅"
             CF_MODE=1
@@ -300,26 +437,28 @@ except:
             echo "未发现"
             CF_MODE=0
         fi
-        echo ""
 
-        # 并行竞速：HTTP（快）与隐身浏览器（稳）同时启动
-        LOCKFILE="/tmp/smart3w_lock_$$"
-        RESULT1="/tmp/smart3w_res1_$$.html"
-        RESULT2="/tmp/smart3w_res2_$$.html"
+        # 生成唯一临时文件
+        RANDOM_SUFFIX="${RANDOM}_$$"
+        RESULT_HTTP="/tmp/smart3w_http_${RANDOM_SUFFIX}.html"
+        RESULT_STEALTHY="/tmp/smart3w_stealthy_${RANDOM_SUFFIX}.html"
+        RESULT_CURL="/tmp/smart3w_curl_${RANDOM_SUFFIX}.html"
+        LOCKFILE="/tmp/smart3w_lock_${RANDOM_SUFFIX}"
 
         _finish() {
-            # 子进程调用：标记策略类型到锁文件
             echo "$1" > "$LOCKFILE"
         }
 
-        # 启动 HTTP 策略（5s 超时）
+        SUCCESS=0
+
+        # 策略1: scrapling HTTP (5s 超时)
         (
-            timeout 5 scrapling extract get "$URL" "$RESULT1" 2>/dev/null && \
-            [ -s "$RESULT1" ] && _finish "http"
+            timeout 5 scrapling extract get "$URL" "$RESULT_HTTP" 2>/dev/null && \
+            [ -s "$RESULT_HTTP" ] && _finish "http"
         ) &
         PID1=$!
 
-        # 启动隐身策略（有CF时解CF，无CF时跳过解CF节省时间）
+        # 策略2: scrapling stealthy
         if [ "$CF_MODE" = "1" ]; then
             STEALTHY_TIMEOUT=15
             STEALTHY_FLAGS="--headless --solve-cloudflare"
@@ -328,8 +467,8 @@ except:
             STEALTHY_FLAGS="--headless"
         fi
         (
-            timeout "$STEALTHY_TIMEOUT" scrapling extract stealthy-fetch "$URL" "$RESULT2" $STEALTHY_FLAGS 2>/dev/null && \
-            [ -s "$RESULT2" ] && _finish "stealthy"
+            timeout "$STEALTHY_TIMEOUT" scrapling extract stealthy-fetch "$URL" "$RESULT_STEALTHY" $STEALTHY_FLAGS 2>/dev/null && \
+            [ -s "$RESULT_STEALTHY" ] && _finish "stealthy"
         ) &
         PID2=$!
 
@@ -340,70 +479,83 @@ except:
                 WINNER=$(cat "$LOCKFILE")
                 break
             fi
-            # 两个都死了也退出
             if ! kill -0 "$PID1" 2>/dev/null && ! kill -0 "$PID2" 2>/dev/null; then
                 break
             fi
             sleep 0.2
         done
 
-        # 杀掉另一个进程
+        # 杀掉未完成的进程
         kill "$PID1" "$PID2" 2>/dev/null
         wait "$PID1" "$PID2" 2>/dev/null
 
-        # 清理锁文件
-        rm -f "$LOCKFILE"
-
-        if [ -z "$WINNER" ]; then
-            rm -f "$RESULT1" "$RESULT2"
-            # 两个策略都失败了，CF模式下再做最后一次尝试（显式解CF）
-            if [ "$CF_MODE" = "1" ]; then
-                echo "[最终手段] 尝试强制解 Cloudflare..."
-                FINAL="/tmp/smart3w_final_$$.html"
-                if timeout 20 scrapling extract stealthy-fetch "$URL" "$FINAL" --headless --solve-cloudflare 2>/dev/null && [ -s "$FINAL" ]; then
-                    RAW_BYTES=$(wc -c < "$FINAL")
-                    if [ "$COMPRESS" -eq 1 ] && _compress_html < "$FINAL" > "$OUTPUT" 2>/dev/null && [ -s "$OUTPUT" ]; then
-                        rm -f "$FINAL"
-                        echo "🏁 Cloudflare强制破解成功"
-                        _report "$RAW_BYTES" "$OUTPUT"
-                    else
-                        [ -f "$OUTPUT" ] || mv "$FINAL" "$OUTPUT"
-                        rm -f "$FINAL"
-                        echo "🏁 Cloudflare强制破解成功（原始）"
-                        _report 0 "$OUTPUT"
-                    fi
-                    exit 0
-                fi
-                rm -f "$FINAL"
-            fi
-            echo "❌ 所有方式均失败"
-            exit 1
+        # 选择结果
+        RAW_FILE=""
+        LABEL=""
+        if [ -n "$WINNER" ]; then
+            case "$WINNER" in
+                http)    RAW_FILE="$RESULT_HTTP"; LABEL="scrapling-HTTP" ;;
+                stealthy) RAW_FILE="$RESULT_STEALTHY"; LABEL="scrapling-stealthy" ;;
+            esac
         fi
 
-        # 胜出文件
-        case "$WINNER" in
-            http)    RAW_FILE="$RESULT1"; LABEL="HTTP 抓取"   ;;
-            stealthy) RAW_FILE="$RESULT2"; LABEL="隐身浏览器" ;;
-        esac
+        # 如果 scrapling 都失败，尝试 curl
+        if [ -z "$RAW_FILE" ] || [ ! -s "$RAW_FILE" ]; then
+            echo "⚠️ scrapling 未成功，尝试 curl..."
+            for attempt in 1 2 3; do
+                if [ $attempt -gt 1 ]; then
+                    echo "   curl 重试 ($attempt/3)..."
+                    sleep 1
+                fi
+                
+                curl -L -s -o "$RESULT_CURL" \
+                    -A "$USER_AGENT" \
+                    -H "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8" \
+                    -H "Accept-Language: zh-CN,zh;q=0.9,en;q=0.8" \
+                    -H "Accept-Encoding: gzip, deflate, br" \
+                    --compressed \
+                    --connect-timeout 10 \
+                    --max-time 30 \
+                    "$URL" 2>/dev/null
+                
+                if [ -s "$RESULT_CURL" ]; then
+                    RAW_FILE="$RESULT_CURL"
+                    LABEL="curl"
+                    SUCCESS=1
+                    echo "   ✅ curl 成功"
+                    break
+                fi
+            done
+        else
+            SUCCESS=1
+        fi
 
-        # 压缩
-        if [ "$COMPRESS" -eq 1 ]; then
-            if _compress_html < "$RAW_FILE" > "$OUTPUT" 2>/dev/null && [ -s "$OUTPUT" ]; then
-                RAW_BYTES=$(wc -c < "$RAW_FILE")
-                rm -f "$RAW_FILE" "$RESULT1" "$RESULT2"
-                echo "🏁 ${LABEL}胜出"
-                _report "$RAW_BYTES" "$OUTPUT"
+        # 清理锁文件和临时文件
+        rm -f "$LOCKFILE" "$RESULT_HTTP" "$RESULT_STEALTHY"
+
+        if [ "$SUCCESS" -eq 1 ] && [ -s "$RAW_FILE" ]; then
+            if [ "$COMPRESS" -eq 1 ]; then
+                if _compress_html < "$RAW_FILE" > "$OUTPUT" 2>/dev/null && [ -s "$OUTPUT" ]; then
+                    RAW_BYTES=$(wc -c < "$RAW_FILE")
+                    rm -f "$RAW_FILE" "$RESULT_CURL"
+                    echo "🏁 ${LABEL}胜出"
+                    _report "$RAW_BYTES" "$OUTPUT"
+                else
+                    mv "$RAW_FILE" "$OUTPUT"
+                    rm -f "$RESULT_CURL"
+                    echo "🏁 ${LABEL}胜出（压缩降级）"
+                    _report 0 "$OUTPUT"
+                fi
             else
                 mv "$RAW_FILE" "$OUTPUT"
-                rm -f "$RESULT1" "$RESULT2"
-                echo "🏁 ${LABEL}胜出（压缩降级）"
+                rm -f "$RESULT_CURL"
+                echo "🏁 ${LABEL}胜出"
                 _report 0 "$OUTPUT"
             fi
         else
-            mv "$RAW_FILE" "$OUTPUT"
-            rm -f "$RESULT1" "$RESULT2"
-            echo "🏁 ${LABEL}胜出"
-            _report 0 "$OUTPUT"
+            rm -f "$RESULT_CURL"
+            echo "❌ 所有方式均失败"
+            exit 1
         fi
         exit 0
         ;;
