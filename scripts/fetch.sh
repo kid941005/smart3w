@@ -152,6 +152,22 @@ _fetch_by_stealthy() {
 }
 
 # =============================================================================
+# 内容压缩: 依赖检查
+# =============================================================================
+_check_compress_dependencies() {
+    python3 - <<'PY' >/dev/null 2>&1
+import importlib.util, sys
+mods = ('readability', 'bs4')
+missing = [m for m in mods if importlib.util.find_spec(m) is None]
+sys.exit(0 if not missing else 1)
+PY
+}
+
+_compress_dependency_hint() {
+    _warn "压缩依赖缺失，需安装: readability-lxml beautifulsoup4"
+}
+
+# =============================================================================
 # 内容压缩: readability-lxml 提取正文
 # =============================================================================
 _compress_html() {
@@ -159,8 +175,9 @@ _compress_html() {
     local output="$2"
     
     python3 -c "
-import sys, re
+import sys
 from readability import Document
+from bs4 import BeautifulSoup
 
 try:
     with open('$input', 'r', encoding='utf-8', errors='ignore') as f:
@@ -170,17 +187,70 @@ try:
         sys.exit(1)
     
     doc = Document(html)
+    title = doc.title().strip()
     summary = doc.summary()
-    text = re.sub(r'<[^>]+>', '', summary)
-    text = re.sub(r'\s+', ' ', text).strip()
-    
+    soup = BeautifulSoup(summary, 'html.parser')
+
+    for tag in soup.find_all(['script', 'style', 'nav', 'footer', 'header', 'aside']):
+        tag.decompose()
+
+    parts = []
+    if title:
+        parts.append('# ' + title)
+
+    for node in soup.find_all(['p', 'section', 'blockquote', 'ul', 'ol', 'h1', 'h2', 'h3', 'h4', 'img']):
+        if node.name == 'img':
+            src = node.get('src') or node.get('data-src') or node.get('data-original')
+            if src:
+                if src.startswith('//'):
+                    src = 'https:' + src
+                parts.append(f'![]({src})')
+            continue
+
+        text = node.get_text(separator=' ', strip=True)
+        if text:
+            if node.name == 'h1':
+                parts.append('# ' + text)
+            elif node.name == 'h2':
+                parts.append('## ' + text)
+            elif node.name == 'h3':
+                parts.append('### ' + text)
+            elif node.name == 'h4':
+                parts.append('#### ' + text)
+            else:
+                parts.append(text)
+
+        for img in node.find_all('img'):
+            src = img.get('src') or img.get('data-src') or img.get('data-original')
+            if src:
+                if src.startswith('//'):
+                    src = 'https:' + src
+                parts.append(f'![]({src})')
+
+    lines = []
+    seen_images = set()
+    prev = None
+    for part in parts:
+        part = part.strip()
+        if not part:
+            continue
+        if part.startswith('![]('):
+            if part in seen_images:
+                continue
+            seen_images.add(part)
+        elif part == prev:
+            continue
+        lines.append(part)
+        prev = part
+
+    text = '\n\n'.join(lines).strip()
     if text:
         with open('$output', 'w', encoding='utf-8') as f:
-            f.write(text)
+            f.write(text + '\n')
         print('OK')
     else:
         sys.exit(1)
-except Exception as e:
+except Exception:
     sys.exit(1)
 " 2>/dev/null
 }
@@ -193,7 +263,7 @@ _compress_wechat() {
     local output="$2"
     
     python3 -c "
-import sys, re
+import sys
 from bs4 import BeautifulSoup
 
 try:
@@ -205,33 +275,76 @@ try:
     
     soup = BeautifulSoup(html, 'html.parser')
     
-    # 移除干扰标签
     for tag in soup.find_all(['script', 'style', 'nav', 'footer', 'header', 'aside']):
         tag.decompose()
     
-    # 微信文章正文在 id='js_content' 的 div 中
     content_div = soup.find('div', id='js_content')
-    if content_div:
-        text = content_div.get_text(separator='\n', strip=True)
-        lines = [line.strip() for line in text.split('\n') if line.strip()]
-        text = '\n'.join(lines)
-    else:
-        # 备选：rich_media_content
-        main = soup.find('div', class_='rich_media_content')
-        if main:
-            text = main.get_text(separator='\n', strip=True)
-            lines = [line.strip() for line in text.split('\n') if line.strip()]
-            text = '\n'.join(lines)
+    if not content_div:
+        content_div = soup.find('div', class_='rich_media_content')
+    if not content_div:
+        sys.exit(1)
+
+    parts = []
+    for node in content_div.find_all(['p', 'section', 'blockquote', 'ul', 'ol', 'h1', 'h2', 'h3', 'h4', 'img']):
+        if node.name == 'img':
+            src = node.get('data-src') or node.get('src') or node.get('data-original')
+            if src:
+                if src.startswith('//'):
+                    src = 'https:' + src
+                parts.append(f'![]({src})')
+            continue
+
+        text = ''
+        if node.name == 'p':
+            text = node.get_text(separator=' ', strip=True)
+        elif node.name == 'section':
+            direct_ps = node.find_all('p', recursive=False)
+            if direct_ps:
+                for p in direct_ps:
+                    p_text = p.get_text(separator=' ', strip=True)
+                    if p_text:
+                        parts.append(p_text)
+            elif node.find('img') and not node.get_text(strip=True):
+                pass
+            else:
+                text = node.get_text(separator=' ', strip=True)
         else:
-            sys.exit(1)
-    
+            text = node.get_text(separator=' ', strip=True)
+
+        if text:
+            parts.append(text)
+
+        for img in node.find_all('img', recursive=False):
+            src = img.get('data-src') or img.get('src') or img.get('data-original')
+            if src:
+                if src.startswith('//'):
+                    src = 'https:' + src
+                parts.append(f'![]({src})')
+
+    lines = []
+    seen_images = set()
+    prev = None
+    for part in parts:
+        part = part.strip()
+        if not part:
+            continue
+        if part.startswith('![]('):
+            if part in seen_images:
+                continue
+            seen_images.add(part)
+        elif part == prev:
+            continue
+        lines.append(part)
+        prev = part
+
+    text = '\n\n'.join(lines).strip()
     if text and len(text) > 50:
         with open('$output', 'w', encoding='utf-8') as f:
-            f.write(text)
+            f.write(text + '\n')
         print('OK_WECHAT')
     else:
         sys.exit(1)
-except Exception as e:
+except Exception:
     sys.exit(1)
 " 2>/dev/null
 }
@@ -356,6 +469,13 @@ do_fetch() {
     
     # 内容压缩
     if [[ $COMPRESS -eq 1 ]]; then
+        if ! _check_compress_dependencies; then
+            _compress_dependency_hint
+            _finalize_raw_output "$temp_raw" "$temp_compressed" "$output" "压缩已跳过，保留原始内容"
+            echo "   方法: $method_used"
+            return 0
+        fi
+
         # 检测是否为微信文章
         if [[ "$url" == *"mp.weixin.qq.com"* ]]; then
             _info "检测到微信文章，使用微信专用提取..."

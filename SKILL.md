@@ -1,6 +1,6 @@
 ---
 name: smart3w
-description: 智能网页抓取路由 + SearXNG 搜索。支持 4 种明确语义的抓取方式：get 仅用 curl，fetch 使用 scrapling extract fetch + --real-chrome，stealthy 使用 scrapling stealthy-fetch + --real-chrome，smart 按 curl → fetch → stealthy 自动降级。内置 readability-lxml 正文压缩（默认启用），去除导航/侧边栏/广告，节省 50-80% token。同时支持 SearXNG 网页搜索。
+description: 智能网页抓取路由 + SearXNG 搜索。支持 4 种明确语义的抓取方式：get 仅用 curl，fetch 使用 scrapling extract fetch + --real-chrome，stealthy 使用 scrapling stealthy-fetch + --real-chrome，smart 按 curl → fetch → stealthy 自动降级。默认输出尽量为 Markdown：普通网页提取正文并尽量保留图片为 Markdown 图片链接，微信文章按正文段落输出并保留插图。同时支持 SearXNG 网页搜索。
 version: 2.1.1
 license: MIT
 ---
@@ -21,19 +21,28 @@ license: MIT
             smart    → curl → scrapling extract fetch + --real-chrome → stealthy-fetch + --real-chrome
 
 补充说明：
-- 抓取成功后默认执行正文压缩
+- 抓取成功后默认执行正文提取
+- 默认输出尽量为 Markdown
+- 普通网页会尽量保留正文图片为 Markdown 图片链接：`![](URL)`
+- 微信文章会优先按正文段落输出，并保留正文插图
 - 抓取成功但压缩失败时，回退为原始 HTML
 - 所有抓取策略失败时，命令直接失败
 ```
 
 ## Token 压缩（默认启用）
 
-使用 `readability-lxml` 提取网页正文，自动去除：
+默认执行正文提取，输出尽量为 Markdown：
+- 普通网页使用 `readability-lxml` 提取正文
+- 微信文章使用 BeautifulSoup 提取 `js_content` / `rich_media_content`
+- 普通网页会尽量保留正文图片为 Markdown 图片链接：`![](URL)`
+- 微信文章会按正文段落输出，并保留正文插图
+
+自动去除：
 - 导航栏、侧边栏、页脚
 - 广告、追踪脚本、CSS
-- HTML 标签和多余空白
+- 非正文噪音内容
 
-**压缩效果示例**：原始 HTML 512B → 压缩后 126B（保留 24%）
+**压缩效果示例**：原始 HTML 512B → 提取后 126B（保留 24%）
 
 如需获取原始 HTML，使用 `--no-compress` 参数。
 

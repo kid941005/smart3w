@@ -32,6 +32,11 @@ git clone https://github.com/kid941005/smart3w.git ~/.openclaw/skills/smart3w
 pip install "scrapling[all]>=0.4.2" "readability-lxml>=0.8.0" beautifulsoup4
 ```
 
+**压缩依赖检查**：
+- 默认压缩依赖 `readability-lxml` 和 `beautifulsoup4`
+- 如果缺失，脚本会提示：`压缩依赖缺失，需安装: readability-lxml beautifulsoup4`
+- 缺失时不会中断抓取，只会跳过压缩并保留原始 HTML
+
 **浏览器依赖（`fetch` / `stealthy` 必需）**：
 
 - `get` 仅依赖 `curl`
@@ -48,6 +53,9 @@ pip install "scrapling[all]>=0.4.2" "readability-lxml>=0.8.0" beautifulsoup4
 - 在当前项目实现中，`fetch` = `scrapling extract fetch + --real-chrome`
 - `stealthy` = `scrapling extract stealthy-fetch + --real-chrome`
 - `smart` 会按 `curl → fetch → stealthy` 自动降级
+- 默认输出尽量为 Markdown
+- 普通网页会提取正文并尽量保留图片为 Markdown 图片链接：`![](URL)`
+- 微信文章会优先按正文段落输出 Markdown，并保留正文插图
 
 ---
 
@@ -184,6 +192,8 @@ Smart3W 支持自动识别并优化提取微信公众号文章。
 
 **工作原理**：
 - URL 包含 `mp.weixin.qq.com` → 自动使用 BeautifulSoup 提取 `id='js_content'` 的正文
+- 输出优先按正文段落组织为 Markdown
+- 正文中的图片会保留为 Markdown 图片链接：`![](URL)`
 - 其他网站 → 使用 readability-lxml 进行通用提取
 
 **压缩效果**：
@@ -197,10 +207,14 @@ Smart3W 支持自动识别并优化提取微信公众号文章。
 
 ## 内容压缩
 
-默认启用 readability-lxml 提取正文，自动去除：
+默认启用正文提取，输出尽量为 Markdown，自动去除：
 - 导航栏、侧边栏、页脚
 - 广告、追踪脚本、CSS
-- HTML 标签和多余空白
+- 非正文噪音内容
+
+输出补充：
+- 普通网页会尽量保留正文图片为 `![](URL)`
+- 微信文章会按正文段落输出，并保留正文插图
 
 ---
 
