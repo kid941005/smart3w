@@ -1,7 +1,7 @@
 ---
 name: smart3w
-description: 智能网页抓取路由 + SearXNG 搜索。自动尝试多种方式抓取网页内容，先 scrapling get，失败则自动回退到 stealthy-fetch。内置 readability-lxml 正文压缩（默认启用），去除导航/侧边栏/广告，节省 50-80% token。同时支持 SearXNG 网页搜索。
-version: 1.4.0
+description: 智能网页抓取路由 + SearXNG 搜索。支持 4 种明确语义的抓取方式：get 仅用 curl，fetch 使用 scrapling extract fetch + --real-chrome，stealthy 使用 scrapling stealthy-fetch + --real-chrome，smart 按 curl → fetch → stealthy 自动降级。内置 readability-lxml 正文压缩（默认启用），去除导航/侧边栏/广告，节省 50-80% token。同时支持 SearXNG 网页搜索。
+version: 2.1.1
 license: MIT
 ---
 
@@ -15,13 +15,15 @@ license: MIT
 用户请求
     ├── 搜索模式：SearXNG 搜索 → 返回标题/URL/摘要
     └── 抓取模式：
-            1. scrapling extract get (HTTP)
-            │      成功 → readability-lxml 压缩 → 返回正文文本
-            │      失败
-            2. scrapling stealthy-fetch (绕过反爬)
-            │      成功 → readability-lxml 压缩 → 返回正文文本
-            │      失败
-            3. 所有方式均失败 → 返回原始 HTML（降级保底）
+            get      → 仅 curl
+            fetch    → 仅 scrapling extract fetch + --real-chrome
+            stealthy → 仅 scrapling stealthy-fetch + --real-chrome
+            smart    → curl → scrapling extract fetch + --real-chrome → stealthy-fetch + --real-chrome
+
+补充说明：
+- 抓取成功后默认执行正文压缩
+- 抓取成功但压缩失败时，回退为原始 HTML
+- 所有抓取策略失败时，命令直接失败
 ```
 
 ## Token 压缩（默认启用）
@@ -59,7 +61,7 @@ license: MIT
 ### 智能抓取（默认，推荐）
 
 ```bash
-# 自动选择最佳方式 + 内容压缩
+# 自动按 curl → scrapling extract fetch + --real-chrome → stealthy-fetch + --real-chrome 降级
 ./scripts/fetch.sh smart "https://example.com" /tmp/output.md
 
 # 跳过压缩，获取原始 HTML
@@ -69,7 +71,7 @@ license: MIT
 ### 快速抓取
 
 ```bash
-# HTTP 请求，最快
+# 仅使用 curl，最快最轻量
 ./scripts/fetch.sh get "https://example.com" /tmp/output.md
 
 # 获取原始 HTML（未压缩）
@@ -79,14 +81,14 @@ license: MIT
 ### 动态页面
 
 ```bash
-# 浏览器渲染（SPA / JS 重度页面）
+# 仅使用 scrapling extract fetch + --real-chrome
 ./scripts/fetch.sh fetch "https://spa-website.com" /tmp/output.md
 ```
 
 ### 反爬保护网站
 
 ```bash
-# 绕过 Cloudflare 等
+# 仅使用 scrapling stealthy-fetch + --real-chrome
 ./scripts/fetch.sh stealthy "https://protected-site.com" /tmp/output.html
 ```
 
@@ -95,10 +97,10 @@ license: MIT
 | 场景 | 推荐方式 | 命令 |
 |------|----------|------|
 | 网页搜索 | SearXNG | `fetch.sh search "关键词"` |
-| 静态网页、博客 | extract get + 压缩 | `fetch.sh get <URL>`（默认压缩） |
-| SPA / 重度JS | extract fetch | `fetch.sh fetch <URL>` |
-| Cloudflare 保护 | stealthy-fetch | `fetch.sh stealthy <URL>` |
-| 通用（自动降级） | smart | `fetch.sh smart <URL>` |
+| 普通静态网页、博客 | curl | `fetch.sh get <URL>` |
+| 需要更强页面处理能力 | scrapling extract fetch + --real-chrome | `fetch.sh fetch <URL>` |
+| Cloudflare 保护 | stealthy-fetch + --real-chrome | `fetch.sh stealthy <URL>` |
+| 不确定站点类型 | 自动降级（curl → fetch → stealthy） | `fetch.sh smart <URL>` |
 | 需要原始 HTML | 任意 + --no-compress | `fetch.sh get <URL> --no-compress` |
 
 ## 环境变量

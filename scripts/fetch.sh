@@ -109,7 +109,7 @@ _fetch_by_scrapling() {
     while [[ $attempt -le $RETRY ]]; do
         [[ $attempt -gt 1 ]] && _info "  重试 ($attempt/$RETRY)..."
         
-        if timeout "$TIMEOUT_SCRAPLING" scrapling extract get "$url" "$output" 2>/dev/null && \
+        if timeout "$TIMEOUT_SCRAPLING" scrapling extract fetch "$url" "$output" --real-chrome 2>/dev/null && \
            _is_valid_file "$output"; then
             local size=$(wc -c < "$output")
             _ok "  scrapling HTTP 成功 (${size}B)"
@@ -137,7 +137,7 @@ _fetch_by_stealthy() {
         [[ $attempt -gt 1 ]] && _info "  重试 ($attempt/$RETRY)..."
         
         if timeout "$TIMEOUT_STEALTHY" scrapling extract stealthy-fetch "$url" "$output" \
-            --headless --solve-cloudflare 2>/dev/null && \
+            --real-chrome --headless --solve-cloudflare 2>/dev/null && \
            _is_valid_file "$output"; then
             local size=$(wc -c < "$output")
             _ok "  scrapling stealthy 成功 (${size}B)"
@@ -236,33 +236,122 @@ except Exception as e:
 " 2>/dev/null
 }
 
+# 内容输出收尾：压缩成功
+_finalize_compressed_output() {
+    local raw_file="$1"
+    local compressed_file="$2"
+    local output="$3"
+
+    local raw_size=$(wc -c < "$raw_file")
+    local compressed_size=$(wc -c < "$compressed_file")
+    local ratio=$(( compressed_size * 100 / raw_size ))
+
+    mv "$compressed_file" "$output"
+    rm -f "$raw_file"
+    echo ""
+    _ok "抓取完成 → $output"
+    echo "   原始: ${raw_size}B | 压缩后: ${compressed_size}B | 保留: ${ratio}%"
+}
+
+# 内容输出收尾：保留原始内容
+_finalize_raw_output() {
+    local raw_file="$1"
+    local extra_file="$2"
+    local output="$3"
+    local warn_message="${4:-}"
+
+    [[ -n "$warn_message" ]] && _warn "$warn_message"
+    mv "$raw_file" "$output"
+    rm -f "$extra_file"
+    echo ""
+    _ok "抓取完成(原始) → $output"
+}
+
+# 抓取失败收尾：清理并返回失败
+_fail_fetch() {
+    local raw_file="$1"
+    local extra_file="$2"
+    local error_message="$3"
+
+    _err "$error_message"
+    rm -f "$raw_file" "$extra_file"
+    return 1
+}
+
+# 按模式执行抓取策略
+_run_fetch_mode() {
+    local mode="$1"
+    local url="$2"
+    local raw_file="$3"
+    local result_var="$4"
+    local method_name=""
+
+    case "$mode" in
+        get)
+            _fetch_by_curl "$url" "$raw_file" && method_name="curl"
+            ;;
+        fetch)
+            _fetch_by_scrapling "$url" "$raw_file" && method_name="scrapling-http"
+            ;;
+        stealthy)
+            _fetch_by_stealthy "$url" "$raw_file" && method_name="scrapling-stealthy"
+            ;;
+        smart)
+            if _fetch_by_curl "$url" "$raw_file"; then
+                method_name="curl"
+            elif _fetch_by_scrapling "$url" "$raw_file"; then
+                method_name="scrapling-http"
+            elif _fetch_by_stealthy "$url" "$raw_file"; then
+                method_name="scrapling-stealthy"
+            fi
+            ;;
+        *)
+            return 2
+            ;;
+    esac
+
+    [[ -n "$method_name" ]] || return 1
+    printf -v "$result_var" '%s' "$method_name"
+    return 0
+}
+
 # =============================================================================
-# 主抓取逻辑（策略循环）
+# 主抓取逻辑（按命令选择策略）
 # =============================================================================
 do_fetch() {
-    local url="$1"
-    local output="$2"
+    local mode="$1"
+    local url="$2"
+    local output="$3"
     local method_used=""
+    local run_status=0
     
-    _log "开始抓取: $url"
+    _log "开始抓取[$mode]: $url"
     
     # 临时文件
     local temp_raw=$(_make_temp)
     local temp_compressed=$(_make_temp)
     
-    # 策略1: curl (最可靠)
-    if _fetch_by_curl "$url" "$temp_raw"; then
-        method_used="curl"
-    # 策略2: scrapling HTTP
-    elif _fetch_by_scrapling "$url" "$temp_raw"; then
-        method_used="scrapling-http"
-    # 策略3: scrapling stealthy
-    elif _fetch_by_stealthy "$url" "$temp_raw"; then
-        method_used="scrapling-stealthy"
-    else
-        _err "所有策略均失败"
-        rm -f "$temp_raw" "$temp_compressed"
-        return 1
+    _run_fetch_mode "$mode" "$url" "$temp_raw" method_used
+    run_status=$?
+
+    if [[ $run_status -ne 0 ]]; then
+        case "$mode" in
+            get)
+                _fail_fetch "$temp_raw" "$temp_compressed" "get 模式抓取失败"
+                ;;
+            fetch)
+                _fail_fetch "$temp_raw" "$temp_compressed" "fetch 模式抓取失败"
+                ;;
+            stealthy)
+                _fail_fetch "$temp_raw" "$temp_compressed" "stealthy 模式抓取失败"
+                ;;
+            smart)
+                _fail_fetch "$temp_raw" "$temp_compressed" "smart 模式所有策略均失败"
+                ;;
+            *)
+                _fail_fetch "$temp_raw" "$temp_compressed" "未知抓取模式: $mode"
+                ;;
+        esac
     fi
     
     # 内容压缩
@@ -271,54 +360,22 @@ do_fetch() {
         if [[ "$url" == *"mp.weixin.qq.com"* ]]; then
             _info "检测到微信文章，使用微信专用提取..."
             if _compress_wechat "$temp_raw" "$temp_compressed"; then
-                local raw_size=$(wc -c < "$temp_raw")
-                local compressed_size=$(wc -c < "$temp_compressed")
-                local ratio=$(( compressed_size * 100 / raw_size ))
-                mv "$temp_compressed" "$output"
-                rm -f "$temp_raw"
-                echo ""
-                _ok "抓取完成 → $output"
-                echo "   原始: ${raw_size}B | 压缩后: ${compressed_size}B | 保留: ${ratio}%"
+                _finalize_compressed_output "$temp_raw" "$temp_compressed" "$output"
             elif _compress_html "$temp_raw" "$temp_compressed"; then
-                local raw_size=$(wc -c < "$temp_raw")
-                local compressed_size=$(wc -c < "$temp_compressed")
-                local ratio=$(( compressed_size * 100 / raw_size ))
-                mv "$temp_compressed" "$output"
-                rm -f "$temp_raw"
-                echo ""
-                _ok "抓取完成 → $output"
-                echo "   原始: ${raw_size}B | 压缩后: ${compressed_size}B | 保留: ${ratio}%"
+                _finalize_compressed_output "$temp_raw" "$temp_compressed" "$output"
             else
-                _warn "压缩失败，保留原始内容"
-                mv "$temp_raw" "$output"
-                rm -f "$temp_compressed"
-                echo ""
-                _ok "抓取完成(原始) → $output"
+                _finalize_raw_output "$temp_raw" "$temp_compressed" "$output" "压缩失败，保留原始内容"
             fi
         else
             # 普通网页：先尝试 readability
             if _compress_html "$temp_raw" "$temp_compressed"; then
-                local raw_size=$(wc -c < "$temp_raw")
-                local compressed_size=$(wc -c < "$temp_compressed")
-                local ratio=$(( compressed_size * 100 / raw_size ))
-                mv "$temp_compressed" "$output"
-                rm -f "$temp_raw"
-                echo ""
-                _ok "抓取完成 → $output"
-                echo "   原始: ${raw_size}B | 压缩后: ${compressed_size}B | 保留: ${ratio}%"
+                _finalize_compressed_output "$temp_raw" "$temp_compressed" "$output"
             else
-                _warn "压缩失败，保留原始内容"
-                mv "$temp_raw" "$output"
-                rm -f "$temp_compressed"
-                echo ""
-                _ok "抓取完成(原始) → $output"
+                _finalize_raw_output "$temp_raw" "$temp_compressed" "$output" "压缩失败，保留原始内容"
             fi
         fi
     else
-        mv "$temp_raw" "$output"
-        rm -f "$temp_compressed"
-        echo ""
-        _ok "抓取完成(原始) → $output"
+        _finalize_raw_output "$temp_raw" "$temp_compressed" "$output"
     fi
     
     echo "   方法: $method_used"
@@ -461,13 +518,13 @@ case "$ACTION" in
         output="${REMOTE_ARGS[1]:-/tmp/fetch_result.md}"
         
         if [[ -z "$url" ]]; then
-            echo "用法: $0 get|smart <URL> [输出文件] [--no-compress] [--ua 'UA'] [--timeout N] [--retry N]" >&2
+            echo "用法: $0 get|fetch|stealthy|smart <URL> [输出文件] [--no-compress] [--ua 'UA'] [--timeout N] [--retry N]" >&2
             echo "       $0 search <关键词> [数量]" >&2
             echo "       $0 sitemap <url> [最大条数]" >&2
             exit 1
         fi
         
-        do_fetch "$url" "$output"
+        do_fetch "$ACTION" "$url" "$output"
         ;;
     
     help|--help|-h)
@@ -475,10 +532,10 @@ case "$ACTION" in
         echo ""
         echo "用法:"
         echo "  $0 search <关键词> [数量]        SearXNG 搜索"
-        echo "  $0 get <URL> [输出文件]          HTTP 抓取（curl 优先）"
-        echo "  $0 smart <URL> [输出文件]        智能抓取（自动选择最佳策略）"
-        echo "  $0 fetch <URL> [输出文件]        浏览器渲染抓取"
-        echo "  $0 stealthy <URL> [输出文件]    绕过反爬抓取"
+        echo "  $0 get <URL> [输出文件]          仅使用 curl 轻量 HTTP 抓取"
+        echo "  $0 fetch <URL> [输出文件]        仅使用 scrapling HTTP/渲染型抓取"
+        echo "  $0 stealthy <URL> [输出文件]    仅使用 scrapling stealthy 反爬抓取"
+        echo "  $0 smart <URL> [输出文件]        自动按 curl → scrapling HTTP → stealthy 降级"
         echo "  $0 sitemap <url> [最大条数]      Sitemap 解析"
         echo ""
         echo "参数:"

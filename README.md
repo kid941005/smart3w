@@ -2,7 +2,7 @@
 
 [![OpenClaw](https://img.shields.io/badge/OpenClaw-Compatible-green)](https://github.com/openclaw/openclaw)
 [![MIT](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-2.1.0-blue)](https://github.com/kid941005/smart3w/releases)
+[![Version](https://img.shields.io/badge/Version-2.1.1-blue)](https://github.com/kid941005/smart3w/releases)
 
 集 **SearXNG 网页搜索**、**Sitemap 解析** 与 **智能网页抓取** 于一体。
 
@@ -30,8 +30,24 @@ git clone https://github.com/kid941005/smart3w.git ~/.openclaw/skills/smart3w
 **依赖**：
 ```bash
 pip install "scrapling[all]>=0.4.2" "readability-lxml>=0.8.0" beautifulsoup4
-scrapling install --force
 ```
+
+**浏览器依赖（`fetch` / `stealthy` 必需）**：
+
+- `get` 仅依赖 `curl`
+- `fetch` / `stealthy` 默认依赖 `Google Chrome Stable`
+- 当前实现默认使用 `--real-chrome`
+- 需要确保以下路径存在：`/opt/google/chrome/chrome`
+
+```bash
+/opt/google/chrome/chrome --version
+```
+
+**说明**：
+- `scrapling[all]` 是当前推荐安装方式
+- 在当前项目实现中，`fetch` = `scrapling extract fetch + --real-chrome`
+- `stealthy` = `scrapling extract stealthy-fetch + --real-chrome`
+- `smart` 会按 `curl → fetch → stealthy` 自动降级
 
 ---
 
@@ -61,31 +77,35 @@ scrapling install --force
 
 ---
 
-### get - HTTP 抓取（推荐）
+### get - HTTP 抓取（轻量）
 
-**默认策略**：curl → scrapling → scrapling-stealthy
+**仅使用策略**：curl
 
 ```bash
 ./scripts/fetch.sh get "https://example.com" /tmp/output.md
 ```
 
-适用场景：普通网页、博客、文档、微信文章、知乎等。
+适用场景：普通静态网页、博客、文档，优先追求速度和轻量依赖。
 
 ---
 
 ### smart - 智能抓取
 
-自动选择最佳策略，与 `get` 命令相同。
+**自动降级策略**：curl → scrapling extract get → scrapling extract stealthy-fetch
 
 ```bash
 ./scripts/fetch.sh smart "https://example.com" /tmp/output.md
 ```
 
+适用场景：不确定站点类型时，优先使用该命令。
+
 ---
 
-### fetch - 浏览器渲染
+### fetch - 渲染型抓取
 
-使用无头浏览器渲染页面，适合 React/Vue/Angular 等 SPA 应用。
+**仅使用策略**：scrapling extract fetch + `--real-chrome`
+
+适合需要比纯 curl 更强页面处理能力的页面。
 
 ```bash
 ./scripts/fetch.sh fetch "https://spa-app.com" /tmp/output.md
@@ -93,7 +113,9 @@ scrapling install --force
 
 ---
 
-### stealthy - 绕过反爬
+### stealthy - 反爬抓取
+
+**仅使用策略**：scrapling extract stealthy-fetch + `--real-chrome`
 
 处理 Cloudflare 等反爬保护网站。
 
@@ -135,17 +157,23 @@ scrapling install --force
 ## 工作流程
 
 ```
-get/smart <URL>
-    │
+get <URL>
+    └─► curl ─► 成功后内容压缩（默认） ─► 输出结果
+
+fetch <URL>
+    └─► scrapling extract fetch + --real-chrome ─► 成功后内容压缩（默认） ─► 输出结果
+
+stealthy <URL>
+    └─► scrapling extract stealthy-fetch + --real-chrome ─► 成功后内容压缩（默认） ─► 输出结果
+
+smart <URL>
     ├─1─► curl ──────────────────────► [成功] ──┐
-    │                                    │       │
-    │                              内容压缩        │
-    │                                 │        │
-    └─2─► scrapling HTTP ──► [成功] ──┴────────┤
-    │                                         │
-    └─3─► scrapling stealthy ──► [成功] ──────┘
-                                               │
-                                         输出结果
+    ├─2─► scrapling extract fetch + --real-chrome ─► [成功] ──┼─► 内容压缩（默认） ─► 输出结果
+    └─3─► scrapling extract stealthy-fetch + --real-chrome ─► [成功] ─┘
+
+补充：
+- 抓取成功但压缩失败时，保留原始 HTML
+- 全部抓取策略失败时，命令直接失败
 ```
 
 ---
@@ -192,9 +220,10 @@ SEARXNG_INSTANCE="https://your-searxng.com" ./scripts/fetch.sh search "关键词
 
 | 场景 | 推荐命令 |
 |------|----------|
-| 普通网页/博客/微信/知乎 | `get` |
-| SPA 应用（React/Vue） | `fetch` |
+| 普通静态网页/博客/文档 | `get` |
+| 需要更强页面处理能力 | `fetch` |
 | 反爬保护网站 | `stealthy` |
+| 不确定站点类型 | `smart` |
 | 网页搜索 | `search` |
 | 解析站点地图 | `sitemap` |
 | 获取原始 HTML | `get --no-compress` |
@@ -210,8 +239,7 @@ smart3w/
 ├── LICENSE           # MIT 许可证
 ├── .gitignore        # Git 忽略文件
 └── scripts/
-    ├── fetch.sh      # 统一入口脚本
-    └── search.sh     # SearXNG 搜索脚本
+    └── fetch.sh      # 统一入口脚本（搜索 / 抓取 / Sitemap）
 ```
 
 ---
