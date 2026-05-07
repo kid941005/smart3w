@@ -2,7 +2,7 @@
 
 [![OpenClaw](https://img.shields.io/badge/OpenClaw-Compatible-green)](https://github.com/openclaw/openclaw)
 [![MIT](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-2.1.4-blue)](https://github.com/kid941005/smart3w/releases)
+[![Version](https://img.shields.io/badge/Version-2.1.5-blue)](https://github.com/kid941005/smart3w/releases)
 
 集 **SearXNG 网页搜索**、**Sitemap 解析** 与 **智能网页抓取** 于一体。
 
@@ -65,8 +65,7 @@ pip install "scrapling[all]>=0.4.2" "readability-lxml>=0.8.0" beautifulsoup4
 
 ### 最小抓取 smoke test
 ```bash
-./scripts/fetch.sh get "https://example.com" ./smoke_output.md
-test -s ./smoke_output.md && echo "SMOKE_OK"
+./scripts/fetch.sh smoke
 ```
 
 用于验证最基本的抓取、落盘和输出非空是否正常。

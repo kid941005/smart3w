@@ -1,7 +1,7 @@
 ---
 name: smart3w
 description: 智能网页抓取路由 + SearXNG 搜索。支持 4 种明确语义的抓取方式：get 仅用 curl，fetch 使用 scrapling extract fetch + --real-chrome，stealthy 使用 scrapling stealthy-fetch + --real-chrome，smart 按 curl → fetch → stealthy 自动降级。默认输出尽量为 Markdown：普通网页提取正文并尽量保留图片为 Markdown 图片链接，微信文章按正文段落输出并保留插图。同时支持 SearXNG 网页搜索。
-version: 2.1.4
+version: 2.1.5
 license: MIT
 ---
 
@@ -51,8 +51,7 @@ license: MIT
 ### 最小抓取 smoke test
 
 ```bash
-./scripts/fetch.sh get "https://example.com" ./smoke_output.md
-test -s ./smoke_output.md && echo "SMOKE_OK"
+./scripts/fetch.sh smoke
 ```
 
 用于验证最基本的抓取、落盘和输出非空是否正常。

@@ -581,6 +581,30 @@ do_fetch() {
 }
 
 # =============================================================================
+# smoke test
+# =============================================================================
+_do_smoke() {
+    local output="./smoke_output.md"
+    rm -f "$output"
+
+    do_fetch "get" "https://example.com" "$output" >/dev/null 2>&1 || {
+        _err "smoke 失败：抓取未成功"
+        rm -f "$output"
+        return 1
+    }
+
+    if [[ -s "$output" ]]; then
+        rm -f "$output"
+        echo "SMOKE_OK"
+        return 0
+    fi
+
+    _err "smoke 失败：输出文件为空"
+    rm -f "$output"
+    return 1
+}
+
+# =============================================================================
 # 网页搜索 (SearXNG)
 # =============================================================================
 do_search() {
@@ -720,6 +744,10 @@ case "$ACTION" in
             _doctor
         fi
         ;;
+
+    smoke)
+        _do_smoke
+        ;;
     
     get|fetch|stealthy|smart)
         url="${REMOTE_ARGS[0]:-}"
@@ -746,6 +774,7 @@ case "$ACTION" in
         echo "  $0 smart <URL> [输出文件]        自动按 curl → scrapling HTTP → stealthy 降级"
         echo "  $0 sitemap <url> [最大条数]      Sitemap 解析"
         echo "  $0 doctor [--check-search]       检查运行依赖与环境"
+        echo "  $0 smoke                         最小抓取 smoke test"
         echo ""
         echo "参数:"
         echo "  --no-compress    跳过内容压缩，获取原始 HTML"
