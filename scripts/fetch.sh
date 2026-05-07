@@ -27,7 +27,12 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --no-compress) COMPRESS=0; shift ;;
         --ua|--user-agent) USER_AGENT="$2"; shift 2 ;;
-        --timeout) TIMEOUT_CURL="$2"; shift 2 ;;
+        --timeout)
+            TIMEOUT_CURL="$2"
+            TIMEOUT_SCRAPLING="$2"
+            TIMEOUT_STEALTHY="$2"
+            shift 2
+            ;;
         --retry) RETRY="$2"; shift 2 ;;
         --) shift; REMOTE_ARGS+=("$@"); break ;;
         -*) echo "未知参数: $1"; exit 1 ;;
@@ -165,6 +170,59 @@ PY
 
 _compress_dependency_hint() {
     _warn "压缩依赖缺失，需安装: readability-lxml beautifulsoup4"
+}
+
+_doctor_check_cmd() {
+    local cmd="$1"
+    if command -v "$cmd" >/dev/null 2>&1; then
+        _ok "$cmd 已安装"
+        return 0
+    fi
+    _err "$cmd 未安装"
+    return 1
+}
+
+_doctor_check_python_module() {
+    local module="$1"
+    if python3 - <<PY >/dev/null 2>&1
+import importlib.util, sys
+sys.exit(0 if importlib.util.find_spec('$module') else 1)
+PY
+    then
+        _ok "Python 模块 $module 已安装"
+        return 0
+    fi
+    _err "Python 模块 $module 未安装"
+    return 1
+}
+
+_doctor_check_file() {
+    local path="$1"
+    if [[ -x "$path" ]]; then
+        _ok "$path 存在且可执行"
+        return 0
+    fi
+    _err "$path 不存在或不可执行"
+    return 1
+}
+
+_doctor() {
+    local failed=0
+
+    _doctor_check_cmd curl || failed=1
+    _doctor_check_cmd python3 || failed=1
+    _doctor_check_cmd scrapling || failed=1
+    _doctor_check_python_module readability || failed=1
+    _doctor_check_python_module bs4 || failed=1
+    _doctor_check_file /opt/google/chrome/chrome || failed=1
+
+    if [[ $failed -eq 0 ]]; then
+        _ok "doctor 检查通过"
+        return 0
+    fi
+
+    _err "doctor 检查失败"
+    return 1
 }
 
 # =============================================================================
@@ -632,10 +690,14 @@ case "$ACTION" in
         max="${REMOTE_ARGS[1]:-50}"
         do_sitemap "$url" "$max"
         ;;
+
+    doctor)
+        _doctor
+        ;;
     
     get|fetch|stealthy|smart)
         url="${REMOTE_ARGS[0]:-}"
-        output="${REMOTE_ARGS[1]:-/tmp/fetch_result.md}"
+        output="${REMOTE_ARGS[1]:-./fetch_result.md}"
         
         if [[ -z "$url" ]]; then
             echo "用法: $0 get|fetch|stealthy|smart <URL> [输出文件] [--no-compress] [--ua 'UA'] [--timeout N] [--retry N]" >&2
@@ -657,11 +719,12 @@ case "$ACTION" in
         echo "  $0 stealthy <URL> [输出文件]    仅使用 scrapling stealthy 反爬抓取"
         echo "  $0 smart <URL> [输出文件]        自动按 curl → scrapling HTTP → stealthy 降级"
         echo "  $0 sitemap <url> [最大条数]      Sitemap 解析"
+        echo "  $0 doctor                        检查运行依赖与环境"
         echo ""
         echo "参数:"
         echo "  --no-compress    跳过内容压缩，获取原始 HTML"
         echo "  --ua 'UA'        自定义 User-Agent"
-        echo "  --timeout N      curl 超时时间（秒）"
+        echo "  --timeout N      所有抓取模式的超时时间（秒）"
         echo "  --retry N        失败重试次数"
         ;;
     

@@ -2,7 +2,7 @@
 
 [![OpenClaw](https://img.shields.io/badge/OpenClaw-Compatible-green)](https://github.com/openclaw/openclaw)
 [![MIT](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-2.1.1-blue)](https://github.com/kid941005/smart3w/releases)
+[![Version](https://img.shields.io/badge/Version-2.1.2-blue)](https://github.com/kid941005/smart3w/releases)
 
 集 **SearXNG 网页搜索**、**Sitemap 解析** 与 **智能网页抓取** 于一体。
 
@@ -50,6 +50,7 @@ pip install "scrapling[all]>=0.4.2" "readability-lxml>=0.8.0" beautifulsoup4
 
 **说明**：
 - `scrapling[all]` 是当前推荐安装方式
+- 安装后可先运行 `./scripts/fetch.sh doctor` 做环境自检
 - 在当前项目实现中，`fetch` = `scrapling extract fetch + --real-chrome`
 - `stealthy` = `scrapling extract stealthy-fetch + --real-chrome`
 - `smart` 会按 `curl → fetch → stealthy` 自动降级
@@ -68,7 +69,7 @@ pip install "scrapling[all]>=0.4.2" "readability-lxml>=0.8.0" beautifulsoup4
 
 ### 抓取
 ```bash
-./scripts/fetch.sh get "https://example.com" /tmp/output.md
+./scripts/fetch.sh get "https://example.com" ./output.md
 ```
 
 ---
@@ -90,7 +91,7 @@ pip install "scrapling[all]>=0.4.2" "readability-lxml>=0.8.0" beautifulsoup4
 **仅使用策略**：curl
 
 ```bash
-./scripts/fetch.sh get "https://example.com" /tmp/output.md
+./scripts/fetch.sh get "https://example.com" ./output.md
 ```
 
 适用场景：普通静态网页、博客、文档，优先追求速度和轻量依赖。
@@ -102,7 +103,7 @@ pip install "scrapling[all]>=0.4.2" "readability-lxml>=0.8.0" beautifulsoup4
 **自动降级策略**：curl → scrapling extract get → scrapling extract stealthy-fetch
 
 ```bash
-./scripts/fetch.sh smart "https://example.com" /tmp/output.md
+./scripts/fetch.sh smart "https://example.com" ./output.md
 ```
 
 适用场景：不确定站点类型时，优先使用该命令。
@@ -116,7 +117,7 @@ pip install "scrapling[all]>=0.4.2" "readability-lxml>=0.8.0" beautifulsoup4
 适合需要比纯 curl 更强页面处理能力的页面。
 
 ```bash
-./scripts/fetch.sh fetch "https://spa-app.com" /tmp/output.md
+./scripts/fetch.sh fetch "https://spa-app.com" ./output.md
 ```
 
 ---
@@ -139,6 +140,12 @@ pip install "scrapling[all]>=0.4.2" "readability-lxml>=0.8.0" beautifulsoup4
 ./scripts/fetch.sh sitemap "https://example.com/sitemap.xml" [最大条数]
 ```
 
+### doctor - 环境自检
+
+```bash
+./scripts/fetch.sh doctor
+```
+
 支持 Sitemap Index 和 URL Set 两种格式。
 
 ---
@@ -149,12 +156,12 @@ pip install "scrapling[all]>=0.4.2" "readability-lxml>=0.8.0" beautifulsoup4
 |------|------|--------|
 | `--no-compress` | 跳过压缩，获取原始 HTML | - |
 | `--ua 'UA'` | 自定义 User-Agent | Chrome |
-| `--timeout N` | curl 超时时间（秒） | 15 |
+| `--timeout N` | 所有抓取模式的超时时间（秒） | 15 |
 | `--retry N` | 失败重试次数 | 2 |
 
 **示例**：
 ```bash
-./scripts/fetch.sh get "https://example.com" /tmp/output.md \
+./scripts/fetch.sh get "https://example.com" ./output.md \
     --ua "Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X)" \
     --timeout 20 \
     --retry 3
@@ -248,8 +255,8 @@ SEARXNG_INSTANCE="https://your-searxng.com" ./scripts/fetch.sh search "关键词
 
 ```
 smart3w/
-├── SKILL.md          # OpenClaw Skill 元数据
 ├── README.md         # 本文件
+├── SKILL.md          # OpenClaw Skill 元数据
 ├── LICENSE           # MIT 许可证
 ├── .gitignore        # Git 忽略文件
 └── scripts/
