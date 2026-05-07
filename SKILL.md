@@ -1,7 +1,7 @@
 ---
 name: smart3w
 description: 智能网页抓取路由 + SearXNG 搜索。支持 4 种明确语义的抓取方式：get 仅用 curl，fetch 使用 scrapling extract fetch + --real-chrome，stealthy 使用 scrapling stealthy-fetch + --real-chrome，smart 按 curl → fetch → stealthy 自动降级。默认输出尽量为 Markdown：普通网页提取正文并尽量保留图片为 Markdown 图片链接，微信文章按正文段落输出并保留插图。同时支持 SearXNG 网页搜索。
-version: 2.1.2
+version: 2.1.4
 license: MIT
 ---
 
@@ -48,6 +48,15 @@ license: MIT
 
 ## 使用方法
 
+### 最小抓取 smoke test
+
+```bash
+./scripts/fetch.sh get "https://example.com" ./smoke_output.md
+test -s ./smoke_output.md && echo "SMOKE_OK"
+```
+
+用于验证最基本的抓取、落盘和输出非空是否正常。
+
 ### 网页搜索
 
 ```bash
@@ -71,35 +80,46 @@ license: MIT
 
 ```bash
 # 自动按 curl → scrapling extract fetch + --real-chrome → stealthy-fetch + --real-chrome 降级
-./scripts/fetch.sh smart "https://example.com" /tmp/output.md
+./scripts/fetch.sh smart "https://example.com" ./output.md
 
 # 跳过压缩，获取原始 HTML
-./scripts/fetch.sh smart "https://example.com" /tmp/output.html --no-compress
+./scripts/fetch.sh smart "https://example.com" ./output.html --no-compress
 ```
 
 ### 快速抓取
 
 ```bash
 # 仅使用 curl，最快最轻量
-./scripts/fetch.sh get "https://example.com" /tmp/output.md
+./scripts/fetch.sh get "https://example.com" ./output.md
 
 # 获取原始 HTML（未压缩）
-./scripts/fetch.sh get "https://example.com" /tmp/output.html --no-compress
+./scripts/fetch.sh get "https://example.com" ./output.html --no-compress
 ```
 
 ### 动态页面
 
 ```bash
 # 仅使用 scrapling extract fetch + --real-chrome
-./scripts/fetch.sh fetch "https://spa-website.com" /tmp/output.md
+./scripts/fetch.sh fetch "https://spa-website.com" ./output.md
 ```
 
 ### 反爬保护网站
 
 ```bash
 # 仅使用 scrapling stealthy-fetch + --real-chrome
-./scripts/fetch.sh stealthy "https://protected-site.com" /tmp/output.html
+./scripts/fetch.sh stealthy "https://protected-site.com" ./output.html
 ```
+
+## 环境自检
+
+```bash
+./scripts/fetch.sh doctor
+./scripts/fetch.sh doctor --check-search
+```
+
+用于检查 `curl`、`python3`、`scrapling`、Python 模块 `readability`、Python 模块 `bs4`，以及 `/opt/google/chrome/chrome` 是否可用。
+
+传入 `--check-search` 时，还会额外检查 `SEARXNG_INSTANCE` 的连通性；该检查会发起真实网络请求。
 
 ## 选择策略
 
@@ -114,8 +134,10 @@ license: MIT
 
 ## 环境变量
 
-| 变量 | 默认值 | 说明 |
+| 参数 | 默认值 | 说明 |
 |------|--------|------|
+| `--timeout N` | `15` | 所有抓取模式的超时时间（秒，正整数） |
+| `--retry N` | `2` | 失败重试次数（正整数） |
 | `SEARXNG_INSTANCE` | `https://searxng.example.com:59826` | SearXNG 实例地址 |
 
 ## 注意事项

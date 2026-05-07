@@ -26,14 +26,22 @@ REMOTE_ARGS=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --no-compress) COMPRESS=0; shift ;;
+        --check-search) REMOTE_ARGS+=("$1"); shift ;;
         --ua|--user-agent) USER_AGENT="$2"; shift 2 ;;
         --timeout)
+            [[ $# -ge 2 ]] || { echo "--timeout 需要一个正整数参数" >&2; exit 1; }
+            [[ "$2" =~ ^[1-9][0-9]*$ ]] || { echo "--timeout 必须为正整数" >&2; exit 1; }
             TIMEOUT_CURL="$2"
             TIMEOUT_SCRAPLING="$2"
             TIMEOUT_STEALTHY="$2"
             shift 2
             ;;
-        --retry) RETRY="$2"; shift 2 ;;
+        --retry)
+            [[ $# -ge 2 ]] || { echo "--retry 需要一个正整数参数" >&2; exit 1; }
+            [[ "$2" =~ ^[1-9][0-9]*$ ]] || { echo "--retry 必须为正整数" >&2; exit 1; }
+            RETRY="$2"
+            shift 2
+            ;;
         --) shift; REMOTE_ARGS+=("$@"); break ;;
         -*) echo "未知参数: $1"; exit 1 ;;
         *) REMOTE_ARGS+=("$1"); shift ;;
@@ -208,6 +216,9 @@ _doctor_check_file() {
 
 _doctor() {
     local failed=0
+    local check_search=0
+
+    [[ "${1:-}" == "--check-search" ]] && check_search=1
 
     _doctor_check_cmd curl || failed=1
     _doctor_check_cmd python3 || failed=1
@@ -215,6 +226,15 @@ _doctor() {
     _doctor_check_python_module readability || failed=1
     _doctor_check_python_module bs4 || failed=1
     _doctor_check_file /opt/google/chrome/chrome || failed=1
+
+    if [[ $check_search -eq 1 ]]; then
+        if curl -fsS --max-time 10 "$SEARXNG_INSTANCE/search?q=smart3w&format=json" >/dev/null 2>&1; then
+            _ok "SEARXNG_INSTANCE 可连通"
+        else
+            _err "SEARXNG_INSTANCE 不可连通"
+            failed=1
+        fi
+    fi
 
     if [[ $failed -eq 0 ]]; then
         _ok "doctor 检查通过"
@@ -682,17 +702,23 @@ case "$ACTION" in
     search)
         query="${REMOTE_ARGS[0]:-}"
         count="${REMOTE_ARGS[1]:-10}"
+        [[ "$count" =~ ^[1-9][0-9]*$ ]] || { echo "search 数量必须为正整数" >&2; exit 1; }
         do_search "$query" "$count"
         ;;
     
     sitemap)
         url="${REMOTE_ARGS[0]:-}"
         max="${REMOTE_ARGS[1]:-50}"
+        [[ "$max" =~ ^[1-9][0-9]*$ ]] || { echo "sitemap 最大条数必须为正整数" >&2; exit 1; }
         do_sitemap "$url" "$max"
         ;;
 
     doctor)
-        _doctor
+        if [[ "${REMOTE_ARGS[0]:-}" == "--check-search" ]]; then
+            _doctor --check-search
+        else
+            _doctor
+        fi
         ;;
     
     get|fetch|stealthy|smart)
@@ -719,13 +745,13 @@ case "$ACTION" in
         echo "  $0 stealthy <URL> [输出文件]    仅使用 scrapling stealthy 反爬抓取"
         echo "  $0 smart <URL> [输出文件]        自动按 curl → scrapling HTTP → stealthy 降级"
         echo "  $0 sitemap <url> [最大条数]      Sitemap 解析"
-        echo "  $0 doctor                        检查运行依赖与环境"
+        echo "  $0 doctor [--check-search]       检查运行依赖与环境"
         echo ""
         echo "参数:"
         echo "  --no-compress    跳过内容压缩，获取原始 HTML"
         echo "  --ua 'UA'        自定义 User-Agent"
         echo "  --timeout N      所有抓取模式的超时时间（秒）"
-        echo "  --retry N        失败重试次数"
+        echo "  --retry N        失败重试次数（正整数）"
         ;;
     
     *)

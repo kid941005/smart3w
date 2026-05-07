@@ -2,7 +2,7 @@
 
 [![OpenClaw](https://img.shields.io/badge/OpenClaw-Compatible-green)](https://github.com/openclaw/openclaw)
 [![MIT](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-2.1.2-blue)](https://github.com/kid941005/smart3w/releases)
+[![Version](https://img.shields.io/badge/Version-2.1.4-blue)](https://github.com/kid941005/smart3w/releases)
 
 集 **SearXNG 网页搜索**、**Sitemap 解析** 与 **智能网页抓取** 于一体。
 
@@ -51,6 +51,7 @@ pip install "scrapling[all]>=0.4.2" "readability-lxml>=0.8.0" beautifulsoup4
 **说明**：
 - `scrapling[all]` 是当前推荐安装方式
 - 安装后可先运行 `./scripts/fetch.sh doctor` 做环境自检
+- 如需同时验证搜索连通性，可运行 `./scripts/fetch.sh doctor --check-search`（该命令会向 `SEARXNG_INSTANCE` 发起真实网络请求）
 - 在当前项目实现中，`fetch` = `scrapling extract fetch + --real-chrome`
 - `stealthy` = `scrapling extract stealthy-fetch + --real-chrome`
 - `smart` 会按 `curl → fetch → stealthy` 自动降级
@@ -61,6 +62,14 @@ pip install "scrapling[all]>=0.4.2" "readability-lxml>=0.8.0" beautifulsoup4
 ---
 
 ## 快速开始
+
+### 最小抓取 smoke test
+```bash
+./scripts/fetch.sh get "https://example.com" ./smoke_output.md
+test -s ./smoke_output.md && echo "SMOKE_OK"
+```
+
+用于验证最基本的抓取、落盘和输出非空是否正常。
 
 ### 搜索
 ```bash
@@ -100,7 +109,7 @@ pip install "scrapling[all]>=0.4.2" "readability-lxml>=0.8.0" beautifulsoup4
 
 ### smart - 智能抓取
 
-**自动降级策略**：curl → scrapling extract get → scrapling extract stealthy-fetch
+**自动降级策略**：curl → scrapling extract fetch → scrapling extract stealthy-fetch
 
 ```bash
 ./scripts/fetch.sh smart "https://example.com" ./output.md
@@ -129,8 +138,21 @@ pip install "scrapling[all]>=0.4.2" "readability-lxml>=0.8.0" beautifulsoup4
 处理 Cloudflare 等反爬保护网站。
 
 ```bash
-./scripts/fetch.sh stealthy "https://protected-site.com" /tmp/output.html
+./scripts/fetch.sh stealthy "https://protected-site.com" ./output.html
 ```
+
+---
+
+### doctor - 环境自检
+
+```bash
+./scripts/fetch.sh doctor
+./scripts/fetch.sh doctor --check-search
+```
+
+用于检查 `curl`、`python3`、`scrapling`、Python 模块 `readability`、Python 模块 `bs4`，以及 `/opt/google/chrome/chrome` 是否可用。
+
+传入 `--check-search` 时，还会额外检查 `SEARXNG_INSTANCE` 的连通性；该检查会发起真实网络请求。
 
 ---
 
@@ -138,12 +160,6 @@ pip install "scrapling[all]>=0.4.2" "readability-lxml>=0.8.0" beautifulsoup4
 
 ```bash
 ./scripts/fetch.sh sitemap "https://example.com/sitemap.xml" [最大条数]
-```
-
-### doctor - 环境自检
-
-```bash
-./scripts/fetch.sh doctor
 ```
 
 支持 Sitemap Index 和 URL Set 两种格式。
@@ -156,8 +172,10 @@ pip install "scrapling[all]>=0.4.2" "readability-lxml>=0.8.0" beautifulsoup4
 |------|------|--------|
 | `--no-compress` | 跳过压缩，获取原始 HTML | - |
 | `--ua 'UA'` | 自定义 User-Agent | Chrome |
-| `--timeout N` | 所有抓取模式的超时时间（秒） | 15 |
-| `--retry N` | 失败重试次数 | 2 |
+| `--timeout N` | 所有抓取模式的超时时间（秒，正整数） | 15 |
+| `--retry N` | 失败重试次数（正整数） | 2 |
+| `search <关键词> [数量]` | 搜索结果数量（正整数） | 10 |
+| `sitemap <url> [最大条数]` | Sitemap 输出条数（正整数） | 50 |
 
 **示例**：
 ```bash
