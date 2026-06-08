@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Smart3W MCP Server - 将 smart3w 搜索与网页抓取能力暴露为 MCP 工具"""
 
+import argparse
 import json
 import os
 import subprocess
@@ -14,7 +15,12 @@ FETCH_SH = SERVER_DIR / "scripts" / "fetch.sh"
 SEARXNG_INSTANCE = os.environ.get("SEARXNG_INSTANCE", "https://searxng.hqgg.top:59826")
 DEFAULT_TIMEOUT = int(os.environ.get("SMART3W_TIMEOUT", "30"))
 
-mcp = FastMCP("smart3w", host="0.0.0.0", port=int(os.environ.get("SMART3W_PORT", "50826")))
+mcp = FastMCP(
+    "smart3w",
+    host="0.0.0.0",
+    port=int(os.environ.get("SMART3W_PORT", "50826")),
+    streamable_http_path=os.getenv("MCP_PATH", "/mcp"),
+)
 
 
 def _run_fetch(args: list[str], timeout: int = DEFAULT_TIMEOUT) -> str:
@@ -95,4 +101,11 @@ def smart3w_doctor(check_search: bool = False) -> str:
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    mcp.run(transport="sse")
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--transport",
+        choices=["stdio", "streamable-http"],
+        default=os.getenv("MCP_TRANSPORT", "streamable-http"),
+    )
+    args = parser.parse_args()
+    mcp.run(transport=args.transport)

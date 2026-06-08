@@ -1,9 +1,11 @@
 services:
   smart3w-mcp:
-    image: kid941005/smart3w-mcp:v2.2.0
+    image: kid941005/smart3w-mcp:v2.2.1
     container_name: smart3w-mcp
     restart: unless-stopped
     ports:
       - "50826:50826"
     environment:
       SEARXNG_INSTANCE: ${SEARXNG_INSTANCE:-https://searxng.hqgg.top:59826}
+      MCP_TRANSPORT: streamable-http
+      MCP_PATH: /mcp
