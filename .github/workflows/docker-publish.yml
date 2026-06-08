@@ -47,6 +47,7 @@ jobs:
         run: |
           TAG="${{ github.event.inputs.tag || github.ref_name }}"
           echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
       - name: Build and push
         uses: docker/build-push-action@v6
@@ -56,5 +57,7 @@ jobs:
           tags: |
             ${{ env.DOCKER_IMAGE }}:latest
             ${{ env.DOCKER_IMAGE }}:${{ steps.meta.outputs.version }}
+            ${{ env.DOCKER_IMAGE }}:${{ steps.meta.outputs.tag }}
             ${{ env.GHCR_IMAGE }}:latest
             ${{ env.GHCR_IMAGE }}:${{ steps.meta.outputs.version }}
+            ${{ env.GHCR_IMAGE }}:${{ steps.meta.outputs.tag }}
