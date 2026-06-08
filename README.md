@@ -2,7 +2,7 @@
 
 [![OpenClaw](https://img.shields.io/badge/OpenClaw-Compatible-green)](https://github.com/openclaw/openclaw)
 [![MIT](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-2.1.5-blue)](https://github.com/kid941005/smart3w/releases)
+[![Version](https://img.shields.io/badge/Version-2.2.0-blue)](https://github.com/kid941005/smart3w/releases)
 
 集 **SearXNG 网页搜索**、**Sitemap 解析** 与 **智能网页抓取** 于一体。
 
@@ -278,7 +278,21 @@ smart3w/
 ├── .gitignore        # Git 忽略文件
 └── scripts/
     └── fetch.sh      # 统一入口脚本（搜索 / 抓取 / Sitemap）
+├── Dockerfile         # Docker 镜像构建（MCP 服务）
+├── mcp_server.py      # MCP 服务入口（FastMCP + SSE）
+└── requirements.txt   # Python 依赖（Docker 构建使用）
 ```
+
+---
+
+## 📝 更新日志
+
+### 2.2.0 (2026-06-08)
+
+- **Docker + MCP 封装**：新增 `Dockerfile`、`mcp_server.py`、`requirements.txt`
+- **暴露 4 个 MCP 工具**：`smart3w_search`、`smart3w_fetch`、`smart3w_sitemap`、`smart3w_doctor`
+- **Hermes 可直接调用**：通过 SSE 端点暴露，配置 `mcp_servers.smart3w` 即可接入
+- 镜像推送至 `kid941005/smart3w-mcp` 和 `ghcr.io/kid941005/smart3w-mcp`
 
 ---
 
