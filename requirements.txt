@@ -1,0 +1,4 @@
+mcp>=1.6.0
+scrapling[all]>=0.4.2
+readability-lxml>=0.8.0
+beautifulsoup4>=4.12.0
