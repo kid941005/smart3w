@@ -1,6 +1,6 @@
 services:
   smart3w-mcp:
-    image: kid941005/smart3w-mcp:v2.2.1
+    image: kid941005/smart3w-mcp:latest
     container_name: smart3w-mcp
     restart: unless-stopped
     ports:
