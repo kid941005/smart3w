@@ -30,6 +30,11 @@ jobs:
         with:
           ref: ${{ github.event.inputs.tag || github.ref_name }}
 
+      - name: Run unit tests
+        run: |
+          pip install --no-cache-dir -r requirements-dev.txt
+          pytest -q
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 

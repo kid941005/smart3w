@@ -2,7 +2,9 @@
 """Smart3W MCP Server - 将 smart3w 搜索与网页抓取能力暴露为 MCP 工具"""
 
 import argparse
+import json
 import os
+import re
 import subprocess
 import tempfile
 from pathlib import Path
@@ -65,8 +67,15 @@ def _run_fetch(args: list[str], timeout: int = DEFAULT_TIMEOUT) -> str:
     return result.stdout
 
 
-def _run_fetch_file(url: str, mode: str, compress: bool, timeout: int) -> str:
-    """Run a fetch variant that writes to a file, return file content."""
+def _run_fetch_file(
+    url: str,
+    mode: str,
+    compress: bool,
+    timeout: int,
+    max_length: int,
+    start_index: int,
+) -> dict:
+    """Run a fetch variant that writes to a file, return structured result."""
     with tempfile.NamedTemporaryFile(mode="w+", suffix=".md", delete=False) as tmp:
         out_path = tmp.name
 
@@ -77,7 +86,29 @@ def _run_fetch_file(url: str, mode: str, compress: bool, timeout: int) -> str:
 
         log = _run_fetch(args, _fetch_subprocess_timeout(timeout, mode))
         content = Path(out_path).read_text(encoding="utf-8", errors="replace")
-        return f"{content}\n\n---\n{log.strip()}"
+        total_length = len(content)
+
+        method = None
+        m = re.search(r"方法:\s*([^\s|]+)", log)
+        if m:
+            method = m.group(1)
+
+        content = content[start_index:] if start_index else content
+        truncated = bool(max_length and len(content) > max_length)
+        if truncated:
+            content = content[:max_length]
+
+        return {
+            "success": True,
+            "url": url,
+            "mode": mode,
+            "method": method,
+            "content": content,
+            "total_length": total_length,
+            "chars_returned": len(content),
+            "truncated": truncated,
+            "log": log.strip(),
+        }
     finally:
         Path(out_path).unlink(missing_ok=True)
 
@@ -95,7 +126,14 @@ def smart3w_search(query: str, count: int = 10) -> str:
 
 
 @mcp.tool()
-def smart3w_fetch(url: str, mode: str = "smart", compress: bool = True, timeout: int = 30) -> str:
+def smart3w_fetch(
+    url: str,
+    mode: str = "smart",
+    compress: bool = True,
+    timeout: int = 30,
+    max_length: int = 0,
+    start_index: int = 0,
+) -> str:
     """Fetch and extract content from a webpage.
 
     Args:
@@ -105,15 +143,32 @@ def smart3w_fetch(url: str, mode: str = "smart", compress: bool = True, timeout:
               'stealthy' (scrapling + Chrome + Cloudflare bypass)
         compress: Whether to extract readable content (True) or return raw HTML (False)
         timeout: Per-request timeout in seconds
+        max_length: Maximum characters of content to return (0 = unlimited)
+        start_index: 0-based offset into the extracted content (for pagination)
+
+    Returns:
+        JSON string: {success, url, mode, method, content, total_length,
+                      chars_returned, truncated, log}
     """
+    error = None
     if mode not in ("smart", "get", "fetch", "stealthy"):
-        return f"❌ 无效抓取模式: {mode}。可选: smart, get, fetch, stealthy"
-    if timeout < 1 or timeout > 120:
-        return "❌ timeout 必须是 1-120 的整数（秒）"
-    url_error = _validate_http_url(url)
-    if url_error:
-        return f"❌ {url_error}"
-    return _run_fetch_file(url, mode, compress, timeout)
+        error = f"无效抓取模式: {mode}。可选: smart, get, fetch, stealthy"
+    elif timeout < 1 or timeout > 120:
+        error = "timeout 必须是 1-120 的整数（秒）"
+    elif max_length < 0 or max_length > 200000:
+        error = "max_length 必须是 0-200000 的整数（0 表示不截断）"
+    elif start_index < 0:
+        error = "start_index 必须是非负整数"
+    else:
+        error = _validate_http_url(url)
+    if error:
+        return json.dumps({"success": False, "url": url, "error": error}, ensure_ascii=False)
+
+    try:
+        result = _run_fetch_file(url, mode, compress, timeout, max_length, start_index)
+    except RuntimeError as exc:
+        result = {"success": False, "url": url, "error": str(exc)}
+    return json.dumps(result, ensure_ascii=False)
 
 
 @mcp.tool()
