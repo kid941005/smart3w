@@ -54,3 +54,6 @@ ENV SMART3W_TIMEOUT=30
 EXPOSE 50826
 
 CMD ["python3", "mcp_server.py"]
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD python3 -c "import socket,os; socket.create_connection(('127.0.0.1', int(os.environ.get('SMART3W_PORT','50826'))), 3).close()" || exit 1

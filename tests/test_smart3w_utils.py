@@ -5,8 +5,6 @@ import ssl
 import sys
 from pathlib import Path
 
-import pytest
-
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 import smart3w_utils as su  # noqa: E402
@@ -120,3 +118,82 @@ def test_ssl_context_can_be_disabled(monkeypatch):
     ctx = su._ssl_context()
     assert ctx.verify_mode == ssl.CERT_NONE
     assert ctx.check_hostname is False
+
+
+class _FakeResp:
+    def __init__(self, body):
+        self._body = body
+
+    def read(self):
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+
+def test_search_passes_params_and_enriches_results(capsys, monkeypatch):
+    captured = {}
+
+    def fake_urlopen(req, context=None, timeout=None):
+        captured["url"] = req.full_url
+        return _FakeResp(b'{"results": [{"title": "t", "url": "https://example.com/a?utm_source=x", '
+                         b'"content": "c", "score": 0.9, "engines": ["google"], "positions": [1]}]}')
+
+    monkeypatch.setattr(su.urllib.request, "urlopen", fake_urlopen)
+    su.cmd_search("q", 5, "https://a.example", language="en-US", time_range="week",
+                  categories="news", safesearch=2, engines="google,bing")
+    data = json.loads(capsys.readouterr().out)
+
+    assert data["success"] is True
+    assert "language=en-US" in captured["url"]
+    assert "time_range=week" in captured["url"]
+    assert "categories=news" in captured["url"]
+    assert "safesearch=2" in captured["url"]
+    assert "engines=google%2Cbing" in captured["url"]
+    assert data["instance"] == "https://a.example"
+    assert data["results"][0]["score"] == 0.9
+    assert data["results"][0]["engines"] == ["google"]
+    assert data["results"][0]["positions"] == [1]
+
+
+def test_search_falls_back_to_backup_instance(capsys, monkeypatch):
+    calls = []
+
+    def fake_urlopen(req, context=None, timeout=None):
+        calls.append(req.full_url)
+        if req.full_url.startswith("https://a.example"):
+            raise OSError("primary instance down")
+        return _FakeResp(b'{"results": [{"title": "t", "url": "https://example.com/x", "content": "c"}]}')
+
+    monkeypatch.setenv("SEARXNG_INSTANCES", "https://b.example, https://a.example")
+    monkeypatch.setattr(su.urllib.request, "urlopen", fake_urlopen)
+    su.cmd_search("q", 5, "https://a.example")
+    data = json.loads(capsys.readouterr().out)
+
+    assert data["success"] is True
+    assert data["instance"] == "https://b.example"
+    assert len(calls) == 2
+
+
+def test_search_dedupes_results_by_normalized_url(capsys, monkeypatch):
+    body = b'{"results": [{"title": "t1", "url": "https://example.com/a?utm_source=x", "content": "c1", "engines": ["google"]}, {"title": "t2", "url": "https://example.com/a", "content": "c2", "engines": ["bing"], "score": 0.8}]}'
+    monkeypatch.setattr(
+        su.urllib.request, "urlopen",
+        lambda req, context=None, timeout=None: _FakeResp(body),
+    )
+    su.cmd_search("q", 5, "https://a.example")
+    data = json.loads(capsys.readouterr().out)
+
+    assert data["result_count"] == 1
+    assert data["results"][0]["title"] == "t1"
+    assert sorted(data["results"][0]["engines"]) == ["bing", "google"]
+
+
+def test_search_validates_safesearch(capsys, monkeypatch):
+    su.cmd_search("q", 5, "https://a.example", safesearch=3)
+    data = json.loads(capsys.readouterr().out)
+    assert data["success"] is False
+    assert "safesearch" in data["error"]

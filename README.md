@@ -2,7 +2,7 @@
 
 [![OpenClaw](https://img.shields.io/badge/OpenClaw-Compatible-green)](https://github.com/openclaw/openclaw)
 [![MIT](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-2.2.4-blue)](https://github.com/kid941005/smart3w/releases)
+[![Version](https://img.shields.io/badge/Version-2.2.5-blue)](https://github.com/kid941005/smart3w/releases)
 
 集 **SearXNG 网页搜索**、**Sitemap 解析** 与 **智能网页抓取** 于一体。
 
@@ -14,6 +14,10 @@
 |------|------|
 | 🔍 **网页搜索** | SearXNG 驱动，隐私友好 |
 | 📄 **网页抓取** | 分层策略架构，稳定可靠 |
+| 🚀 **批量抓取** | `smart3w_crawl` 并发抓取 + URL 去重 |
+| 🔁 **多实例容灾** | 搜索主实例失败自动切换备用 SearXNG 实例 |
+| 🧠 **去重缓存** | URL 规范化 + TTL 缓存，重复请求秒回 |
+| 🤖 **Robots/限速** | 可选遵守 robots.txt，按域名限速防封 |
 | 📱 **微信专取** | 自动识别微信文章，精准提取正文 |
 | 📦 **内容压缩** | readability-lxml 提取正文，节省 50-80% token |
 | 🗺️ **Sitemap** | 支持 Index 和 URL Set 格式 |
@@ -73,6 +77,8 @@ pip install "scrapling[all]>=0.4.2" "readability-lxml>=0.8.0" beautifulsoup4
 ### 搜索
 ```bash
 ./scripts/fetch.sh search "关键词" [结果数量]
+# 进阶：语言 / 时间范围 / 分类 / 安全搜索 / 指定引擎
+./scripts/fetch.sh search "关键词" 10 --language zh-CN --time-range week --categories news --safesearch 1 --engines google,bing
 ```
 
 ### 抓取
@@ -90,7 +96,15 @@ pip install "scrapling[all]>=0.4.2" "readability-lxml>=0.8.0" beautifulsoup4
 ./scripts/fetch.sh search "OpenClaw AI" 5
 ```
 
-返回 JSON 格式结果（标题、URL、摘要）。
+返回 JSON 格式结果（标题、URL、摘要、评分、引擎、位置）。支持：
+
+- `--language zh-CN|en-US|...`：语言（留空表示不指定）
+- `--time-range day|week|month|year`：时间范围
+- `--categories general,news,images`：搜索分类
+- `--safesearch 0|1|2`：安全搜索（0=关闭 1=中等 2=严格）
+- `--engines google,bing`：指定引擎
+
+多实例容灾：主 `SEARXNG_INSTANCE` 失败时，会自动按 `SEARXNG_INSTANCES`（逗号分隔）中的备用实例依次兜底。
 
 ---
 
@@ -174,6 +188,11 @@ pip install "scrapling[all]>=0.4.2" "readability-lxml>=0.8.0" beautifulsoup4
 | `--timeout N` | 所有抓取模式的超时时间（秒，正整数；MCP 工具 `smart3w_fetch` 默认为 30） | 15 |
 | `--retry N` | 失败重试次数（正整数） | 2 |
 | `search <关键词> [数量]` | 搜索结果数量（正整数） | 10 |
+| `search --language <lang>` | 搜索语言，如 zh-CN / en-US（留空表示不指定） | zh-CN |
+| `search --time-range <范围>` | 时间范围：day/week/month/year | 不限 |
+| `search --categories <分类>` | 搜索分类，逗号分隔，如 general,news | 默认 |
+| `search --safesearch <0|1|2>` | 安全搜索：0=关闭 1=中等 2=严格 | 0 |
+| `search --engines <引擎>` | 指定引擎，逗号分隔，如 google,bing | SearXNG 默认 |
 | `sitemap <url> [最大条数]` | Sitemap 输出条数（正整数） | 50 |
 
 **示例**：
@@ -246,10 +265,16 @@ Smart3W 支持自动识别并优化提取微信公众号文章。
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
-| `SEARXNG_INSTANCE` | `https://searxng.hqgg.top:59826` | SearXNG 地址 |
+| `SEARXNG_INSTANCE` | `https://searxng.hqgg.top:59826` | SearXNG 地址（主实例） |
+| `SEARXNG_INSTANCES` | 空 | 备用 SearXNG 实例（逗号分隔），主实例失败时自动兜底 |
 | `SMART3W_SSL_VERIFY` | `1` | 是否校验 TLS 证书；自签证书实例可设为 `0`（不推荐） |
 | `SMART3W_PORT` | `50826` | MCP HTTP 服务端口 |
 | `SMART3W_TIMEOUT` | `30` | MCP 层默认请求超时（秒） |
+| `SMART3W_CACHE_TTL` | `300` | 抓取结果缓存有效期（秒） |
+| `SMART3W_CACHE_SIZE` | `64` | 抓取结果缓存最大条目数（LRU 淘汰） |
+| `SMART3W_RESPECT_ROBOTS` | `0` | 单个 `smart3w_fetch` 是否默认遵守 robots.txt（`1` 开启；`smart3w_crawl` 默认开启） |
+| `SMART3W_ROBOTS_TTL` | `3600` | robots.txt 按域名缓存时间（秒） |
+| `SMART3W_MIN_INTERVAL` | `0.2` | 同一域名两次请求的最小间隔（秒） |
 | `MCP_TRANSPORT` | `streamable-http` | MCP 传输方式（`stdio` / `streamable-http`） |
 | `MCP_PATH` | `/mcp` | Streamable HTTP 端点路径 |
 
@@ -287,7 +312,12 @@ smart3w/
 ├── .gitignore        # Git 忽略文件
 ├── Dockerfile        # Docker 镜像构建（MCP 服务）
 ├── mcp_server.py     # MCP 服务入口（FastMCP + Streamable HTTP）
+├── smart3w_fetch_utils.py  # 抓取治理：URL 规范化 / TTL 缓存 / robots / 限速
+├── pyproject.toml    # 项目元数据与依赖声明
+├── uv.lock           # 依赖锁文件（钉死版本，防上游破坏性升级）
 ├── requirements.txt  # Python 依赖（Docker 构建使用）
+├── requirements-dev.txt  # 开发依赖（测试 / lint）
+├── tests/            # 单元测试（pytest）
 └── scripts/
     ├── fetch.sh            # 统一入口脚本（搜索 / 抓取 / Sitemap）
     └── smart3w_utils.py    # 共享 Python 逻辑（搜索 / Sitemap / 正文压缩）
@@ -296,6 +326,15 @@ smart3w/
 ---
 
 ## 📝 更新日志
+
+### 2.2.5 (2026-09-06)
+
+- **搜索增强**：`smart3w_search` 新增 `language/time_range/categories/safesearch/engines` 参数；支持 `SEARXNG_INSTANCES` 多实例故障转移；结果按 URL 去重并补充 `score/engines/positions` 字段
+- **批量抓取**：新增 `smart3w_crawl` 工具，支持并发、URL 去重、robots.txt 检查、按域名限速、429 指数退避
+- **抓取治理**：`smart3w_fetch` 新增 TTL 去重缓存（`use_cache`）与 robots 选项（`respect_robots`），URL 规范化自动去除追踪参数
+- **依赖锁定**：新增 `pyproject.toml` + `uv.lock`，`requirements*.txt` 由锁文件导出（钉死版本），杜绝 mcp 2.x 类事故重演；CI 增加 `uv lock --check` 与 `ruff` 静态检查
+- **运维**：Dockerfile / docker-compose 增加 HEALTHCHECK 健康检查
+- **测试**：新增抓取治理与搜索增强单元测试（共 23 例）
 
 ### 2.2.4 (2026-09-05)
 

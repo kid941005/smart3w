@@ -1,7 +1,7 @@
 ---
 name: smart3w
-description: 智能网页抓取路由 + SearXNG 搜索。支持 4 种明确语义的抓取方式：get 仅用 curl，fetch 使用 scrapling extract fetch + --real-chrome，stealthy 使用 scrapling stealthy-fetch + --real-chrome，smart 按 curl → fetch → stealthy 自动降级。默认输出尽量为 Markdown：普通网页提取正文并尽量保留图片为 Markdown 图片链接，微信文章按正文段落输出并保留插图。同时支持 SearXNG 网页搜索。
-version: 2.2.4
+description: 智能网页抓取路由 + SearXNG 搜索。支持 4 种明确语义的抓取方式：get 仅用 curl，fetch 使用 scrapling extract fetch + --real-chrome，stealthy 使用 scrapling stealthy-fetch + --real-chrome，smart 按 curl → fetch → stealthy 自动降级。支持并发批量抓取、URL 去重缓存、robots.txt 检查与按域名限速；搜索支持多 SearXNG 实例故障转移与语言/时间/分类/安全搜索/引擎参数。默认输出尽量为 Markdown：普通网页提取正文并尽量保留图片为 Markdown 图片链接，微信文章按正文段落输出并保留插图。
+version: 2.2.5
 license: MIT
 ---
 
@@ -61,6 +61,9 @@ license: MIT
 ```bash
 # SearXNG 搜索，返回 JSON
 ./scripts/fetch.sh search "关键词" 10
+
+# 进阶参数：语言 / 时间范围 / 分类 / 安全搜索 / 指定引擎
+./scripts/fetch.sh search "关键词" 10 --language zh-CN --time-range week --categories news --safesearch 1 --engines google,bing
 ```
 
 **输出格式**：
@@ -68,11 +71,21 @@ license: MIT
 {
   "success": true,
   "query": "关键词",
+  "instance": "https://searxng.example.com",
   "results": [
-    { "title": "标题", "url": "https://...", "snippet": "摘要..." }
+    { "title": "标题", "url": "https://...", "snippet": "摘要...", "score": 0.9, "engines": ["google"], "positions": [1] }
   ],
   "result_count": 10
 }
+```
+
+主实例不可用时，自动按 `SEARXNG_INSTANCES`（逗号分隔）中的备用实例依次兜底。
+
+### 批量抓取
+
+```bash
+# MCP 工具：smart3w_crawl(urls=[...], mode="get", concurrency=3, respect_robots=true)
+# 支持 URL 去重、robots.txt 检查、按域名限速、429 指数退避与 TTL 缓存
 ```
 
 ### 智能抓取（默认，推荐）
@@ -138,7 +151,13 @@ license: MIT
 | `--timeout N` | `15` | 所有抓取模式的超时时间（秒，正整数；MCP 工具默认为 30） |
 | `--retry N` | `2` | 失败重试次数（正整数） |
 | `SEARXNG_INSTANCE` | `https://searxng.hqgg.top:59826` | SearXNG 实例地址 |
+| `SEARXNG_INSTANCES` | 空 | 备用 SearXNG 实例（逗号分隔），主实例失败时自动兜底 |
 | `SMART3W_SSL_VERIFY` | `1` | 是否校验 TLS 证书；自签证书实例可设为 `0`（不推荐） |
+| `SMART3W_CACHE_TTL` | `300` | 抓取结果缓存有效期（秒） |
+| `SMART3W_CACHE_SIZE` | `64` | 抓取结果缓存最大条目数（LRU 淘汰） |
+| `SMART3W_RESPECT_ROBOTS` | `0` | 单个 `smart3w_fetch` 是否默认遵守 robots.txt（`smart3w_crawl` 默认开启） |
+| `SMART3W_ROBOTS_TTL` | `3600` | robots.txt 按域名缓存时间（秒） |
+| `SMART3W_MIN_INTERVAL` | `0.2` | 同一域名两次请求的最小间隔（秒） |
 
 ## 注意事项
 

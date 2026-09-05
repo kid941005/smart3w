@@ -13,7 +13,6 @@
 import argparse
 import json
 import os
-import re
 import ssl
 import sys
 import urllib.parse
@@ -23,6 +22,13 @@ import xml.etree.ElementTree as ET
 DEFAULT_INSTANCE = "https://searxng.hqgg.top:59826"
 SEARCH_TIMEOUT = 30
 SITEMAP_TIMEOUT = 15
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
+SEARCH_TIME_RANGES = ("", "day", "week", "month", "year")
+TRACKING_PARAMS = frozenset({
+    "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content",
+    "fbclid", "gclid", "ref", "spm", "from",
+})
 
 IMAGE_ATTRS = ("src", "data-src", "data-original")
 WECHAT_IMAGE_ATTRS = ("data-src", "src", "data-original")
@@ -270,25 +276,140 @@ def compress_wechat(input_path, output_path):
         return False
 
 
-def cmd_search(query, count, instance):
-    """SearXNG 搜索；无论成败都输出纯 JSON（保持与旧行为一致，退出码为 0）。"""
-    params = {"q": query, "format": "json", "language": "zh-CN"}
-    url = f"{instance}/search?{urllib.parse.urlencode(params)}"
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+def _search_instances(primary):
+    """返回去重后的实例列表：主实例 + SEARXNG_INSTANCES 环境变量中的备用实例。"""
+    seen = []
+    candidates = [primary] + [
+        x.strip() for x in os.environ.get("SEARXNG_INSTANCES", "").split(",") if x.strip()
+    ]
+    for url in candidates:
+        url = (url or "").strip().rstrip("/")
+        if url and url not in seen:
+            seen.append(url)
+    return seen
+
+
+def _normalize_result_url(url):
+    """结果 URL 规范化：去 fragment/默认端口/常见追踪参数，query 按键排序。"""
+    raw = (url or "").strip()
     try:
-        with urllib.request.urlopen(req, context=_ssl_context(), timeout=SEARCH_TIMEOUT) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-        results = [
-            {
+        parsed = urllib.parse.urlsplit(raw)
+    except ValueError:
+        return raw
+    scheme = parsed.scheme.lower()
+    host = (parsed.hostname or "").lower()
+    if scheme not in ("http", "https") or not host:
+        return raw
+    try:
+        port = parsed.port
+    except ValueError:
+        port = None
+    if port is not None and (
+        (scheme == "http" and port == 80) or (scheme == "https" and port == 443)
+    ):
+        port = None
+    netloc = host if port is None else f"{host}:{port}"
+    query = urllib.parse.urlencode(sorted(
+        (k, v) for k, v in urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+        if k.lower() not in TRACKING_PARAMS
+    ))
+    return urllib.parse.urlunsplit((scheme, netloc, parsed.path or "/", query, ""))
+
+
+def _fetch_search(instance, query, count, language, time_range, categories, safesearch, engines):
+    """请求单个 SearXNG 实例，返回原始 JSON。"""
+    params = {"q": query, "format": "json"}
+    if language:
+        params["language"] = language
+    if time_range:
+        params["time_range"] = time_range
+    if categories:
+        params["categories"] = categories
+    if safesearch:
+        params["safesearch"] = str(safesearch)
+    if engines:
+        params["engines"] = engines
+    url = f"{instance.rstrip('/')}/search?{urllib.parse.urlencode(params)}"
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    with urllib.request.urlopen(req, context=_ssl_context(), timeout=SEARCH_TIMEOUT) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def cmd_search(query, count, instance, language="zh-CN", time_range="", categories="",
+               safesearch=0, engines=""):
+    """SearXNG 搜索；多实例 fallback + 结果去重，无论成败都输出纯 JSON。"""
+    out = {"success": False, "query": query, "results": [], "result_count": 0}
+    if not query:
+        out["error"] = "query 不能为空"
+        print(json.dumps(out, ensure_ascii=False))
+        return
+    if count < 1 or count > 100:
+        out["error"] = "count 必须是 1-100 的整数"
+        print(json.dumps(out, ensure_ascii=False))
+        return
+    if safesearch not in (0, 1, 2):
+        out["error"] = "safesearch 必须是 0/1/2"
+        print(json.dumps(out, ensure_ascii=False))
+        return
+    if time_range not in SEARCH_TIME_RANGES:
+        out["error"] = "time_range 必须是 day/week/month/year 之一或留空"
+        print(json.dumps(out, ensure_ascii=False))
+        return
+
+    errors = []
+    merged = {}
+    used_instance = None
+    for inst in _search_instances(instance):
+        try:
+            data = _fetch_search(inst, query, count, language, time_range,
+                                 categories, safesearch, engines)
+        except Exception as exc:
+            errors.append(f"{inst}: {exc}")
+            continue
+        used_instance = inst
+        for r in data.get("results", []):
+            key = _normalize_result_url(r.get("url", ""))
+            if not key:
+                continue
+            if key in merged:
+                prev = merged[key]
+                prev["engines"] = sorted(set(prev.get("engines") or []) | set(r.get("engines") or []))
+                prev["positions"] = (prev.get("positions") or []) + (r.get("positions") or [])
+                if not prev.get("score") and r.get("score") is not None:
+                    prev["score"] = r["score"]
+                continue
+            merged[key] = {
                 "title": r.get("title", ""),
                 "url": r.get("url", ""),
                 "snippet": r.get("content", ""),
+                "score": r.get("score"),
+                "engines": sorted(set(r.get("engines") or [])),
+                "positions": r.get("positions") or [],
             }
-            for r in data.get("results", [])[:count]
-        ]
-        out = {"success": True, "query": query, "results": results, "result_count": len(results)}
-    except Exception as exc:
-        out = {"success": False, "error": str(exc), "query": query}
+        break  # 第一个成功的实例即采用；备用实例仅在主实例失败时兜底
+
+    if used_instance is None:
+        out["error"] = "; ".join(errors) or "无可用 SearXNG 实例"
+        print(json.dumps(out, ensure_ascii=False))
+        return
+
+    results = list(merged.values())[:count]
+    out.update({
+        "success": True,
+        "engine": "searxng",
+        "instance": used_instance,
+        "params": {
+            "language": language,
+            "time_range": time_range,
+            "categories": categories,
+            "safesearch": safesearch,
+            "engines": engines,
+        },
+        "results": results,
+        "result_count": len(results),
+    })
+    if errors:
+        out["log"] = "; ".join(errors)
     print(json.dumps(out, ensure_ascii=False))
 
 
@@ -339,6 +460,13 @@ def main(argv=None):
     p_search.add_argument("query")
     p_search.add_argument("count", type=int, nargs="?", default=10)
     p_search.add_argument("instance", nargs="?", default=os.environ.get("SEARXNG_INSTANCE", DEFAULT_INSTANCE))
+    p_search.add_argument("--language", default="zh-CN", help="语言，如 zh-CN / en-US（留空表示不指定）")
+    p_search.add_argument("--time-range", dest="time_range", default="",
+                          choices=SEARCH_TIME_RANGES, help="时间范围: day/week/month/year（空表示不限）")
+    p_search.add_argument("--categories", default="", help="搜索分类，逗号分隔，如 general,news")
+    p_search.add_argument("--safesearch", type=int, default=0, choices=[0, 1, 2],
+                          help="安全搜索: 0=关闭 1=中等 2=严格")
+    p_search.add_argument("--engines", default="", help="指定引擎，逗号分隔，如 google,bing")
 
     p_sitemap = sub.add_parser("sitemap", help="解析 Sitemap")
     p_sitemap.add_argument("url")
@@ -353,7 +481,9 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     if args.command == "search":
-        cmd_search(args.query, args.count, args.instance)
+        cmd_search(args.query, args.count, args.instance, language=args.language,
+                   time_range=args.time_range, categories=args.categories,
+                   safesearch=args.safesearch, engines=args.engines)
     elif args.command == "sitemap":
         cmd_sitemap(args.url, args.max_urls)
     else:

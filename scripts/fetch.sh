@@ -47,6 +47,11 @@ while [[ $# -gt 0 ]]; do
             RETRY="$2"
             shift 2
             ;;
+        --language|--time-range|--categories|--safesearch|--engines)
+            [[ $# -ge 2 ]] || { echo "$1 需要一个参数" >&2; exit 1; }
+            REMOTE_ARGS+=("$1" "$2")
+            shift 2
+            ;;
         --) shift; REMOTE_ARGS+=("$@"); break ;;
         -*) echo "未知参数: $1" >&2; exit 1 ;;
         *) REMOTE_ARGS+=("$1"); shift ;;
@@ -447,15 +452,16 @@ _do_smoke() {
 do_search() {
     local query="$1"
     local count="${2:-10}"
+    shift 2 2>/dev/null || true
 
     if [[ -z "$query" ]]; then
-        echo "用法: $0 search <关键词> [数量]" >&2
+        echo "用法: $0 search <关键词> [数量] [--language zh-CN] [--time-range day|week|month|year] [--categories general,news] [--safesearch 0|1|2] [--engines google,bing]" >&2
         exit 1
     fi
 
     _info "搜索: $query (SearXNG)"
 
-    python3 "$UTILS_PY" search "$query" "$count" "$SEARXNG_INSTANCE"
+    python3 "$UTILS_PY" search "$query" "$count" "$SEARXNG_INSTANCE" "$@"
 }
 
 # =============================================================================
@@ -483,8 +489,9 @@ case "$ACTION" in
     search)
         query="${REMOTE_ARGS[0]:-}"
         count="${REMOTE_ARGS[1]:-10}"
+        shift 2 2>/dev/null || true
         [[ "$count" =~ ^[1-9][0-9]*$ ]] || { echo "search 数量必须为正整数" >&2; exit 1; }
-        do_search "$query" "$count"
+        do_search "$query" "$count" "$@"
         ;;
     
     sitemap)
@@ -525,6 +532,8 @@ case "$ACTION" in
         echo ""
         echo "用法:"
         echo "  $0 search <关键词> [数量]        SearXNG 搜索"
+        echo "         [--language zh-CN] [--time-range day|week|month|year]"
+        echo "         [--categories general,news] [--safesearch 0|1|2] [--engines google,bing]"
         echo "  $0 get <URL> [输出文件]          仅使用 curl 轻量 HTTP 抓取"
         echo "  $0 fetch <URL> [输出文件]        仅使用 scrapling HTTP/渲染型抓取"
         echo "  $0 stealthy <URL> [输出文件]    仅使用 scrapling stealthy 反爬抓取"
