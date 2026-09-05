@@ -22,7 +22,7 @@ jobs:
   build-and-push:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
       packages: write
     steps:
       - name: Checkout
@@ -50,6 +50,7 @@ jobs:
         id: meta
         run: |
           TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           TAGS="${{ env.DOCKER_IMAGE }}:$TAG,${{ env.GHCR_IMAGE }}:$TAG"
           # latest 只在 tag push 时更新，避免手动指定旧 tag 误覆盖 latest
           if [[ "${{ github.event_name }}" == "push" ]]; then
@@ -63,3 +64,11 @@ jobs:
           context: .
           push: true
           tags: ${{ steps.meta.outputs.tags }}
+
+      - name: Create GitHub Release (tag push only)
+        if: github.event_name == 'push'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: Smart3W ${{ steps.meta.outputs.tag }}
+          generate_release_notes: true
