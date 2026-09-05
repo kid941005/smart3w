@@ -8,6 +8,9 @@
 
 set -u
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+UTILS_PY="$SCRIPT_DIR/smart3w_utils.py"
+
 ACTION="${1:-smart}"
 shift 2>/dev/null || true
 
@@ -27,7 +30,9 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --no-compress) COMPRESS=0; shift ;;
         --check-search) REMOTE_ARGS+=("$1"); shift ;;
-        --ua|--user-agent) USER_AGENT="$2"; shift 2 ;;
+        --ua|--user-agent)
+            [[ $# -ge 2 ]] || { echo "--ua 需要一个参数" >&2; exit 1; }
+            USER_AGENT="$2"; shift 2 ;;
         --timeout)
             [[ $# -ge 2 ]] || { echo "--timeout 需要一个正整数参数" >&2; exit 1; }
             [[ "$2" =~ ^[1-9][0-9]*$ ]] || { echo "--timeout 必须为正整数" >&2; exit 1; }
@@ -43,7 +48,7 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         --) shift; REMOTE_ARGS+=("$@"); break ;;
-        -*) echo "未知参数: $1"; exit 1 ;;
+        -*) echo "未知参数: $1" >&2; exit 1 ;;
         *) REMOTE_ARGS+=("$1"); shift ;;
     esac
 done
@@ -54,15 +59,15 @@ set -- "${REMOTE_ARGS[@]}"
 # =============================================================================
 
 # 日志输出
-_log() { echo "[$(date '+%H:%M:%S')] $1"; }
-_info() { echo "ℹ️  $1"; }
-_warn() { echo "⚠️  $1"; }
-_err() { echo "❌ $1"; }
-_ok() { echo "✅ $1"; }
+_log() { echo "[$(date '+%H:%M:%S')] $1" >&2; }
+_info() { echo "ℹ️  $1" >&2; }
+_warn() { echo "⚠️  $1" >&2; }
+_err() { echo "❌ $1" >&2; }
+_ok() { echo "✅ $1" >&2; }
 
 # 创建唯一临时文件
 _make_temp() {
-    mktemp /tmp/smart3w_XXXXXX_$(date +%s).html
+    mktemp /tmp/smart3w_XXXXXX.html
 }
 
 # 检查文件是否有效（非空且可读）
@@ -81,10 +86,10 @@ _fetch_by_curl() {
     _info "策略1: curl 抓取..."
     
     while [[ $attempt -le $RETRY ]]; do
-        [[ $attempt -gt 1 ]] && _info "  重试 ($attempt/$RETRY)..."
+        [[ $attempt -gt 1 ]] && _info "  第 $attempt/$RETRY 次尝试..."
         
         # curl 抓取，带完整请求头和压缩支持
-        curl -L -s --compressed \
+        curl -f -L -s --compressed \
             -A "$USER_AGENT" \
             -H "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8" \
             -H "Accept-Language: zh-CN,zh;q=0.9,en;q=0.8" \
@@ -120,7 +125,7 @@ _fetch_by_scrapling() {
     _info "策略2: scrapling HTTP..."
     
     while [[ $attempt -le $RETRY ]]; do
-        [[ $attempt -gt 1 ]] && _info "  重试 ($attempt/$RETRY)..."
+        [[ $attempt -gt 1 ]] && _info "  第 $attempt/$RETRY 次尝试..."
         
         if timeout "$TIMEOUT_SCRAPLING" scrapling extract fetch "$url" "$output" --real-chrome 2>/dev/null && \
            _is_valid_file "$output"; then
@@ -147,7 +152,7 @@ _fetch_by_stealthy() {
     _info "策略3: scrapling stealthy (绕过反爬)..."
     
     while [[ $attempt -le $RETRY ]]; do
-        [[ $attempt -gt 1 ]] && _info "  重试 ($attempt/$RETRY)..."
+        [[ $attempt -gt 1 ]] && _info "  第 $attempt/$RETRY 次尝试..."
         
         if timeout "$TIMEOUT_STEALTHY" scrapling extract stealthy-fetch "$url" "$output" \
             --real-chrome --headless --solve-cloudflare 2>/dev/null && \
@@ -237,11 +242,11 @@ _doctor() {
     fi
 
     if [[ $failed -eq 0 ]]; then
-        _ok "doctor 检查通过"
+        echo "✅ doctor 检查通过"
         return 0
     fi
 
-    _err "doctor 检查失败"
+    echo "❌ doctor 检查失败"
     return 1
 }
 
@@ -251,86 +256,8 @@ _doctor() {
 _compress_html() {
     local input="$1"
     local output="$2"
-    
-    python3 -c "
-import sys
-from readability import Document
-from bs4 import BeautifulSoup
 
-try:
-    with open('$input', 'r', encoding='utf-8', errors='ignore') as f:
-        html = f.read()
-    
-    if not html.strip():
-        sys.exit(1)
-    
-    doc = Document(html)
-    title = doc.title().strip()
-    summary = doc.summary()
-    soup = BeautifulSoup(summary, 'html.parser')
-
-    for tag in soup.find_all(['script', 'style', 'nav', 'footer', 'header', 'aside']):
-        tag.decompose()
-
-    parts = []
-    if title:
-        parts.append('# ' + title)
-
-    for node in soup.find_all(['p', 'section', 'blockquote', 'ul', 'ol', 'h1', 'h2', 'h3', 'h4', 'img']):
-        if node.name == 'img':
-            src = node.get('src') or node.get('data-src') or node.get('data-original')
-            if src:
-                if src.startswith('//'):
-                    src = 'https:' + src
-                parts.append(f'![]({src})')
-            continue
-
-        text = node.get_text(separator=' ', strip=True)
-        if text:
-            if node.name == 'h1':
-                parts.append('# ' + text)
-            elif node.name == 'h2':
-                parts.append('## ' + text)
-            elif node.name == 'h3':
-                parts.append('### ' + text)
-            elif node.name == 'h4':
-                parts.append('#### ' + text)
-            else:
-                parts.append(text)
-
-        for img in node.find_all('img'):
-            src = img.get('src') or img.get('data-src') or img.get('data-original')
-            if src:
-                if src.startswith('//'):
-                    src = 'https:' + src
-                parts.append(f'![]({src})')
-
-    lines = []
-    seen_images = set()
-    prev = None
-    for part in parts:
-        part = part.strip()
-        if not part:
-            continue
-        if part.startswith('![]('):
-            if part in seen_images:
-                continue
-            seen_images.add(part)
-        elif part == prev:
-            continue
-        lines.append(part)
-        prev = part
-
-    text = '\n\n'.join(lines).strip()
-    if text:
-        with open('$output', 'w', encoding='utf-8') as f:
-            f.write(text + '\n')
-        print('OK')
-    else:
-        sys.exit(1)
-except Exception:
-    sys.exit(1)
-" 2>/dev/null
+    python3 "$UTILS_PY" compress "$input" "$output"
 }
 
 # =============================================================================
@@ -339,92 +266,8 @@ except Exception:
 _compress_wechat() {
     local input="$1"
     local output="$2"
-    
-    python3 -c "
-import sys
-from bs4 import BeautifulSoup
 
-try:
-    with open('$input', 'r', encoding='utf-8', errors='ignore') as f:
-        html = f.read()
-    
-    if not html.strip():
-        sys.exit(1)
-    
-    soup = BeautifulSoup(html, 'html.parser')
-    
-    for tag in soup.find_all(['script', 'style', 'nav', 'footer', 'header', 'aside']):
-        tag.decompose()
-    
-    content_div = soup.find('div', id='js_content')
-    if not content_div:
-        content_div = soup.find('div', class_='rich_media_content')
-    if not content_div:
-        sys.exit(1)
-
-    parts = []
-    for node in content_div.find_all(['p', 'section', 'blockquote', 'ul', 'ol', 'h1', 'h2', 'h3', 'h4', 'img']):
-        if node.name == 'img':
-            src = node.get('data-src') or node.get('src') or node.get('data-original')
-            if src:
-                if src.startswith('//'):
-                    src = 'https:' + src
-                parts.append(f'![]({src})')
-            continue
-
-        text = ''
-        if node.name == 'p':
-            text = node.get_text(separator=' ', strip=True)
-        elif node.name == 'section':
-            direct_ps = node.find_all('p', recursive=False)
-            if direct_ps:
-                for p in direct_ps:
-                    p_text = p.get_text(separator=' ', strip=True)
-                    if p_text:
-                        parts.append(p_text)
-            elif node.find('img') and not node.get_text(strip=True):
-                pass
-            else:
-                text = node.get_text(separator=' ', strip=True)
-        else:
-            text = node.get_text(separator=' ', strip=True)
-
-        if text:
-            parts.append(text)
-
-        for img in node.find_all('img', recursive=False):
-            src = img.get('data-src') or img.get('src') or img.get('data-original')
-            if src:
-                if src.startswith('//'):
-                    src = 'https:' + src
-                parts.append(f'![]({src})')
-
-    lines = []
-    seen_images = set()
-    prev = None
-    for part in parts:
-        part = part.strip()
-        if not part:
-            continue
-        if part.startswith('![]('):
-            if part in seen_images:
-                continue
-            seen_images.add(part)
-        elif part == prev:
-            continue
-        lines.append(part)
-        prev = part
-
-    text = '\n\n'.join(lines).strip()
-    if text and len(text) > 50:
-        with open('$output', 'w', encoding='utf-8') as f:
-            f.write(text + '\n')
-        print('OK_WECHAT')
-    else:
-        sys.exit(1)
-except Exception:
-    sys.exit(1)
-" 2>/dev/null
+    python3 "$UTILS_PY" compress-wechat "$input" "$output"
 }
 
 # 内容输出收尾：压缩成功
@@ -435,7 +278,10 @@ _finalize_compressed_output() {
 
     local raw_size=$(wc -c < "$raw_file")
     local compressed_size=$(wc -c < "$compressed_file")
-    local ratio=$(( compressed_size * 100 / raw_size ))
+    local ratio=0
+    if (( raw_size > 0 )); then
+        ratio=$(( compressed_size * 100 / raw_size ))
+    fi
 
     mv "$compressed_file" "$output"
     rm -f "$raw_file"
@@ -527,22 +373,13 @@ do_fetch() {
 
     if [[ $run_status -ne 0 ]]; then
         case "$mode" in
-            get)
-                _fail_fetch "$temp_raw" "$temp_compressed" "get 模式抓取失败"
-                ;;
-            fetch)
-                _fail_fetch "$temp_raw" "$temp_compressed" "fetch 模式抓取失败"
-                ;;
-            stealthy)
-                _fail_fetch "$temp_raw" "$temp_compressed" "stealthy 模式抓取失败"
-                ;;
-            smart)
-                _fail_fetch "$temp_raw" "$temp_compressed" "smart 模式所有策略均失败"
-                ;;
-            *)
-                _fail_fetch "$temp_raw" "$temp_compressed" "未知抓取模式: $mode"
-                ;;
+            get) _fail_fetch "$temp_raw" "$temp_compressed" "get 模式抓取失败" ;;
+            fetch) _fail_fetch "$temp_raw" "$temp_compressed" "fetch 模式抓取失败" ;;
+            stealthy) _fail_fetch "$temp_raw" "$temp_compressed" "stealthy 模式抓取失败" ;;
+            smart) _fail_fetch "$temp_raw" "$temp_compressed" "smart 模式所有策略均失败" ;;
+            *) _fail_fetch "$temp_raw" "$temp_compressed" "未知抓取模式: $mode" ;;
         esac
+        return 1
     fi
     
     # 内容压缩
@@ -610,46 +447,15 @@ _do_smoke() {
 do_search() {
     local query="$1"
     local count="${2:-10}"
-    
+
     if [[ -z "$query" ]]; then
         echo "用法: $0 search <关键词> [数量]" >&2
         exit 1
     fi
-    
+
     _info "搜索: $query (SearXNG)"
-    
-    python3 - "$query" "$count" "$SEARXNG_INSTANCE" << 'PYEOF'
-import sys, json, urllib.request, urllib.parse, ssl
 
-query = sys.argv[1]
-count = int(sys.argv[2]) if len(sys.argv) > 2 else 10
-instance = sys.argv[3] if len(sys.argv) > 3 else "https://searxng.hqgg.top:59826"
-
-ctx = ssl.create_default_context()
-ctx.check_hostname = False
-ctx.verify_mode = ssl.CERT_NONE
-
-params = {"q": query, "format": "json", "language": "zh-CN"}
-url = f"{instance}/search?{urllib.parse.urlencode(params)}"
-
-try:
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    with urllib.request.urlopen(req, context=ctx, timeout=30) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
-        results = []
-        for r in data.get("results", [])[:count]:
-            results.append({
-                "title": r.get("title", ""),
-                "url": r.get("url", ""),
-                "snippet": r.get("content", "")
-            })
-        print(json.dumps({
-            "success": True, "query": query,
-            "results": results, "result_count": len(results)
-        }, ensure_ascii=False, indent=2))
-except Exception as e:
-    print(json.dumps({"success": False, "error": str(e), "query": query}))
-PYEOF
+    python3 "$UTILS_PY" search "$query" "$count" "$SEARXNG_INSTANCE"
 }
 
 # =============================================================================
@@ -658,64 +464,15 @@ PYEOF
 do_sitemap() {
     local sitemap_url="$1"
     local max_urls="${2:-50}"
-    
+
     if [[ -z "$sitemap_url" ]]; then
         echo "用法: $0 sitemap <sitemap_url> [最大条数]" >&2
         exit 1
     fi
-    
+
     _info "解析 Sitemap: $sitemap_url"
-    
-    python3 - "$sitemap_url" "$max_urls" << 'PYEOF'
-import sys, urllib.request, ssl, xml.etree.ElementTree as ET
 
-sitemap_url = sys.argv[1]
-max_urls = int(sys.argv[2]) if len(sys.argv) > 2 else 50
-
-ctx = ssl.create_default_context()
-ctx.check_hostname = False
-ctx.verify_mode = ssl.CERT_NONE
-
-try:
-    req = urllib.request.Request(sitemap_url, headers={"User-Agent": "Mozilla/5.0"})
-    with urllib.request.urlopen(req, context=ctx, timeout=15) as resp:
-        content = resp.read().decode("utf-8")
-
-    root = ET.fromstring(content)
-    SM = "{http://www.sitemaps.org/schemas/sitemap/0.9}"
-
-    urls = []
-    if "sitemapindex" in root.tag:
-        for sm in root.findall(f"{SM}sitemap"):
-            loc = sm.find(f"{SM}loc")
-            if loc is not None and loc.text:
-                urls.append(("index", "", loc.text))
-    else:
-        for u in root.findall(f"{SM}url"):
-            loc = u.find(f"{SM}loc")
-            if loc is None:
-                loc = u.find("loc")
-            lm = ""
-            lastmod = u.find(f"{SM}lastmod")
-            if lastmod is None:
-                lastmod = u.find("lastmod")
-            if lastmod is not None and lastmod.text:
-                lm = lastmod.text[:10]
-            if loc is not None and loc.text:
-                urls.append((lm, "page", loc.text))
-
-    print(f"✅ 共解析到 {len(urls)} 个URL\n")
-    for i, (lm, utype, u) in enumerate(urls[:max_urls]):
-        prefix = "📋 " if utype == "index" else "  "
-        m = f"[{lm}] " if lm else "          "
-        print(f"{prefix}{i+1:3d}. {m}{u}")
-
-    if len(urls) > max_urls:
-        print(f"\n... 还有 {len(urls) - max_urls} 个URL")
-
-except Exception as e:
-    print(f"❌ 解析失败: {e}")
-PYEOF
+    python3 "$UTILS_PY" sitemap "$sitemap_url" "$max_urls"
 }
 
 # =============================================================================

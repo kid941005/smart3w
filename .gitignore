@@ -27,3 +27,7 @@ Thumbs.db
 # Temp files
 *.tmp
 *.log
+
+# Smart3W runtime output
+smoke_output.md
+fetch_result.md

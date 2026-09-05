@@ -2,7 +2,7 @@
 
 [![OpenClaw](https://img.shields.io/badge/OpenClaw-Compatible-green)](https://github.com/openclaw/openclaw)
 [![MIT](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-2.2.1-blue)](https://github.com/kid941005/smart3w/releases)
+[![Version](https://img.shields.io/badge/Version-2.2.2-blue)](https://github.com/kid941005/smart3w/releases)
 
 集 **SearXNG 网页搜索**、**Sitemap 解析** 与 **智能网页抓取** 于一体。
 
@@ -171,7 +171,7 @@ pip install "scrapling[all]>=0.4.2" "readability-lxml>=0.8.0" beautifulsoup4
 |------|------|--------|
 | `--no-compress` | 跳过压缩，获取原始 HTML | - |
 | `--ua 'UA'` | 自定义 User-Agent | Chrome |
-| `--timeout N` | 所有抓取模式的超时时间（秒，正整数） | 15 |
+| `--timeout N` | 所有抓取模式的超时时间（秒，正整数；MCP 工具 `smart3w_fetch` 默认为 30） | 15 |
 | `--retry N` | 失败重试次数（正整数） | 2 |
 | `search <关键词> [数量]` | 搜索结果数量（正整数） | 10 |
 | `sitemap <url> [最大条数]` | Sitemap 输出条数（正整数） | 50 |
@@ -247,10 +247,19 @@ Smart3W 支持自动识别并优化提取微信公众号文章。
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
 | `SEARXNG_INSTANCE` | `https://searxng.hqgg.top:59826` | SearXNG 地址 |
+| `SMART3W_SSL_VERIFY` | `1` | 是否校验 TLS 证书；自签证书实例可设为 `0`（不推荐） |
+| `SMART3W_PORT` | `50826` | MCP HTTP 服务端口 |
+| `SMART3W_TIMEOUT` | `30` | MCP 层默认请求超时（秒） |
+| `MCP_TRANSPORT` | `streamable-http` | MCP 传输方式（`stdio` / `streamable-http`） |
+| `MCP_PATH` | `/mcp` | Streamable HTTP 端点路径 |
 
 ```bash
 SEARXNG_INSTANCE="https://your-searxng.com" ./scripts/fetch.sh search "关键词"
 ```
+
+> **安全说明**：`SMART3W_SSL_VERIFY=0` 会关闭 TLS 证书校验（存在中间人风险），仅应在自建实例
+> 使用自签证书且无法更换证书时临时开启。另外，MCP 服务默认监听 `0.0.0.0:50826` 且无内置鉴权，
+> 部署到公网时请务必放在带认证/限流的反向代理后面，并避免让不可信调用方传入内网 URL（SSRF 风险）。
 
 ---
 
@@ -276,16 +285,26 @@ smart3w/
 ├── SKILL.md          # OpenClaw Skill 元数据
 ├── LICENSE           # MIT 许可证
 ├── .gitignore        # Git 忽略文件
+├── Dockerfile        # Docker 镜像构建（MCP 服务）
+├── mcp_server.py     # MCP 服务入口（FastMCP + Streamable HTTP）
+├── requirements.txt  # Python 依赖（Docker 构建使用）
 └── scripts/
-    └── fetch.sh      # 统一入口脚本（搜索 / 抓取 / Sitemap）
-├── Dockerfile         # Docker 镜像构建（MCP 服务）
-├── mcp_server.py      # MCP 服务入口（FastMCP + Streamable HTTP）
-└── requirements.txt   # Python 依赖（Docker 构建使用）
+    ├── fetch.sh            # 统一入口脚本（搜索 / 抓取 / Sitemap）
+    └── smart3w_utils.py    # 共享 Python 逻辑（搜索 / Sitemap / 正文压缩）
 ```
 
 ---
 
 ## 📝 更新日志
+
+### 2.2.2 (2026-09-05)
+
+- **修复**：抓取全部失败时不再误报成功，正确返回失败退出码
+- **修复**：MCP 子进程超时与 smart 降级链路时长匹配（重试/降级不再被提前杀死）
+- **修复**：日志改走 stderr，`search` 输出恢复为纯 JSON
+- **安全**：默认恢复 TLS 证书校验（`SMART3W_SSL_VERIFY=0` 可关闭）；curl 增加 `-f` 校验 HTTP 状态码
+- **重构**：搜索 / Sitemap / 正文压缩逻辑抽离为 `scripts/smart3w_utils.py`，修复微信正文段落重复输出
+- **工程**：MCP 层增加 URL 与参数校验；修复 Docker 中 Chrome 符号链接环；CI 仅 tag push 时更新 `latest`
 
 ### 2.2.1 (2026-06-08)
 

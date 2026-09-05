@@ -27,8 +27,7 @@ RUN curl -fsSL https://dl.google.com/linux/linux_signing_key.pub \
     > /etc/apt/sources.list.d/google-chrome.list \
     && apt-get update && apt-get install -y --no-install-recommends \
     google-chrome-stable \
-    && rm -rf /var/lib/apt/lists/* \
-    && ln -sf /usr/bin/google-chrome /opt/google/chrome/chrome
+    && rm -rf /var/lib/apt/lists/*
 
 # --------------------------------------------------------------------------
 # Install Python dependencies

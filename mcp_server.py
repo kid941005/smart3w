@@ -2,11 +2,11 @@
 """Smart3W MCP Server - 将 smart3w 搜索与网页抓取能力暴露为 MCP 工具"""
 
 import argparse
-import json
 import os
 import subprocess
 import tempfile
 from pathlib import Path
+from urllib.parse import urlparse
 
 from mcp.server.fastmcp import FastMCP
 
@@ -14,6 +14,10 @@ SERVER_DIR = Path(__file__).parent.absolute()
 FETCH_SH = SERVER_DIR / "scripts" / "fetch.sh"
 SEARXNG_INSTANCE = os.environ.get("SEARXNG_INSTANCE", "https://searxng.hqgg.top:59826")
 DEFAULT_TIMEOUT = int(os.environ.get("SMART3W_TIMEOUT", "30"))
+
+# 与 scripts/fetch.sh 的默认重试次数保持一致（下方会显式传给 fetch.sh）
+FETCH_RETRY = 2
+_STRATEGY_COUNT = {"get": 1, "fetch": 1, "stealthy": 1, "smart": 3}
 
 mcp = FastMCP(
     "smart3w",
@@ -23,16 +27,42 @@ mcp = FastMCP(
 )
 
 
+def _fetch_subprocess_timeout(timeout: int, mode: str) -> int:
+    """计算 fetch.sh 子进程超时，覆盖每个策略的重试次数与 smart 降级链路总时长。"""
+    strategies = _STRATEGY_COUNT.get(mode, 1)
+    # 每次尝试按 timeout 计（curl --max-time / scrapling timeout），另加建连与进程开销；
+    # 乘以重试次数与策略数后，再留固定余量。
+    return (timeout + 15) * FETCH_RETRY * strategies + 15
+
+
+def _validate_http_url(url: str) -> str | None:
+    """校验 URL：仅允许 http/https 且带主机名；非法时返回错误信息，否则返回 None。"""
+    if not url or len(url) > 8192:
+        return "URL 不能为空且长度不能超过 8192"
+    try:
+        parsed = urlparse(url)
+    except ValueError as exc:
+        return f"URL 格式无效: {exc}"
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        return "仅支持 http/https URL"
+    return None
+
+
 def _run_fetch(args: list[str], timeout: int = DEFAULT_TIMEOUT) -> str:
-    """Run fetch.sh and return stdout."""
+    """Run fetch.sh and return stdout.
+
+    fetch.sh 约定：数据走 stdout，日志走 stderr，因此成功时只返回 stdout，
+    失败时把 stderr（或 stdout）作为异常信息抛出，避免日志污染数据通道。
+    """
     env = {**os.environ, "SEARXNG_INSTANCE": SEARXNG_INSTANCE}
     result = subprocess.run(
         ["bash", str(FETCH_SH)] + args,
         capture_output=True, text=True, timeout=timeout, env=env,
     )
     if result.returncode != 0:
-        raise RuntimeError(result.stderr.strip() or result.stdout.strip() or f"Exit code {result.returncode}")
-    return result.stdout + result.stderr
+        detail = result.stderr.strip() or result.stdout.strip() or f"Exit code {result.returncode}"
+        raise RuntimeError(detail)
+    return result.stdout
 
 
 def _run_fetch_file(url: str, mode: str, compress: bool, timeout: int) -> str:
@@ -41,13 +71,11 @@ def _run_fetch_file(url: str, mode: str, compress: bool, timeout: int) -> str:
         out_path = tmp.name
 
     try:
-        args = [mode, url, out_path, "--timeout", str(timeout)]
+        args = [mode, url, out_path, "--timeout", str(timeout), "--retry", str(FETCH_RETRY)]
         if not compress:
             args.append("--no-compress")
 
-        log = _run_fetch(args, timeout + 5)
-
-        Path(out_path).is_file() or Path(out_path).exists()
+        log = _run_fetch(args, _fetch_subprocess_timeout(timeout, mode))
         content = Path(out_path).read_text(encoding="utf-8", errors="replace")
         return f"{content}\n\n---\n{log.strip()}"
     finally:
@@ -61,6 +89,8 @@ def _run_fetch_file(url: str, mode: str, compress: bool, timeout: int) -> str:
 @mcp.tool()
 def smart3w_search(query: str, count: int = 10) -> str:
     """Search the web via SearXNG. Returns JSON with title/url/snippet per result."""
+    if not query or count < 1 or count > 100:
+        return "❌ query 不能为空，count 必须是 1-100 的整数"
     return _run_fetch(["search", query, str(count)])
 
 
@@ -78,12 +108,22 @@ def smart3w_fetch(url: str, mode: str = "smart", compress: bool = True, timeout:
     """
     if mode not in ("smart", "get", "fetch", "stealthy"):
         return f"❌ 无效抓取模式: {mode}。可选: smart, get, fetch, stealthy"
+    if timeout < 1 or timeout > 120:
+        return "❌ timeout 必须是 1-120 的整数（秒）"
+    url_error = _validate_http_url(url)
+    if url_error:
+        return f"❌ {url_error}"
     return _run_fetch_file(url, mode, compress, timeout)
 
 
 @mcp.tool()
 def smart3w_sitemap(url: str, max_urls: int = 50) -> str:
     """Parse a sitemap (supports index and URL-set formats). Returns discovered URLs."""
+    if max_urls < 1 or max_urls > 10000:
+        return "❌ max_urls 必须是 1-10000 的整数"
+    url_error = _validate_http_url(url)
+    if url_error:
+        return f"❌ {url_error}"
     return _run_fetch(["sitemap", url, str(max_urls)])
 
 
