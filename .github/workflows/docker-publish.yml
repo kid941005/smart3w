@@ -14,6 +14,10 @@ env:
   DOCKER_IMAGE: kid941005/smart3w-mcp
   GHCR_IMAGE: ghcr.io/kid941005/smart3w-mcp
 
+concurrency:
+  group: docker-publish
+  cancel-in-progress: false
+
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
@@ -42,20 +46,20 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract version from tag
+      - name: Resolve image tags
         id: meta
         run: |
           TAG="${{ github.event.inputs.tag || github.ref_name }}"
-          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          TAGS="${{ env.DOCKER_IMAGE }}:$TAG,${{ env.GHCR_IMAGE }}:$TAG"
+          # latest 只在 tag push 时更新，避免手动指定旧 tag 误覆盖 latest
+          if [[ "${{ github.event_name }}" == "push" ]]; then
+            TAGS="$TAGS,${{ env.DOCKER_IMAGE }}:latest,${{ env.GHCR_IMAGE }}:latest"
+          fi
+          echo "tags=$TAGS" >> "$GITHUB_OUTPUT"
 
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
           context: .
           push: true
-          tags: |
-            ${{ env.DOCKER_IMAGE }}:latest
-            ${{ env.DOCKER_IMAGE }}:${{ steps.meta.outputs.tag }}
-            ${{ env.GHCR_IMAGE }}:latest
-            ${{ env.GHCR_IMAGE }}:${{ steps.meta.outputs.tag }}
+          tags: ${{ steps.meta.outputs.tags }}
