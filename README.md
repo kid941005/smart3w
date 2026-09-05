@@ -2,7 +2,7 @@
 
 [![OpenClaw](https://img.shields.io/badge/OpenClaw-Compatible-green)](https://github.com/openclaw/openclaw)
 [![MIT](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-2.2.2-blue)](https://github.com/kid941005/smart3w/releases)
+[![Version](https://img.shields.io/badge/Version-2.2.3-blue)](https://github.com/kid941005/smart3w/releases)
 
 集 **SearXNG 网页搜索**、**Sitemap 解析** 与 **智能网页抓取** 于一体。
 
@@ -296,6 +296,10 @@ smart3w/
 ---
 
 ## 📝 更新日志
+
+### 2.2.3 (2026-09-05)
+
+- **修复**：锁定 `mcp>=1.6.0,<2`，避免 pip 安装 mcp 2.x 导致 `mcp.server.fastmcp` 缺失、MCP 服务启动崩溃
 
 ### 2.2.2 (2026-09-05)
 
