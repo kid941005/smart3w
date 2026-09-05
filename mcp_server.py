@@ -7,10 +7,22 @@ import os
 import re
 import subprocess
 import tempfile
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from urllib.parse import urlparse
 
 from mcp.server.fastmcp import FastMCP
+
+from smart3w_fetch_utils import (
+    DEFAULT_RESPECT_ROBOTS,
+    DomainRateLimiter,
+    RobotsChecker,
+    TTLCache,
+    apply_window,
+    is_rate_limited,
+    normalize_url,
+)
 
 SERVER_DIR = Path(__file__).parent.absolute()
 FETCH_SH = SERVER_DIR / "scripts" / "fetch.sh"
@@ -20,6 +32,11 @@ DEFAULT_TIMEOUT = int(os.environ.get("SMART3W_TIMEOUT", "30"))
 # 与 scripts/fetch.sh 的默认重试次数保持一致（下方会显式传给 fetch.sh）
 FETCH_RETRY = 2
 _STRATEGY_COUNT = {"get": 1, "fetch": 1, "stealthy": 1, "smart": 3}
+
+# 抓取治理：URL 去重缓存 / robots / 按域名限速
+FETCH_CACHE = TTLCache()
+ROBOTS_CHECKER = RobotsChecker()
+RATE_LIMITER = DomainRateLimiter()
 
 mcp = FastMCP(
     "smart3w",
@@ -67,15 +84,8 @@ def _run_fetch(args: list[str], timeout: int = DEFAULT_TIMEOUT) -> str:
     return result.stdout
 
 
-def _run_fetch_file(
-    url: str,
-    mode: str,
-    compress: bool,
-    timeout: int,
-    max_length: int,
-    start_index: int,
-) -> dict:
-    """Run a fetch variant that writes to a file, return structured result."""
+def _do_fetch_file(url: str, mode: str, compress: bool, timeout: int) -> dict:
+    """真正调用 fetch.sh 抓取一个 URL，返回包含完整正文的结构化结果。"""
     with tempfile.NamedTemporaryFile(mode="w+", suffix=".md", delete=False) as tmp:
         out_path = tmp.name
 
@@ -86,17 +96,11 @@ def _run_fetch_file(
 
         log = _run_fetch(args, _fetch_subprocess_timeout(timeout, mode))
         content = Path(out_path).read_text(encoding="utf-8", errors="replace")
-        total_length = len(content)
 
         method = None
         m = re.search(r"方法:\s*([^\s|]+)", log)
         if m:
             method = m.group(1)
-
-        content = content[start_index:] if start_index else content
-        truncated = bool(max_length and len(content) > max_length)
-        if truncated:
-            content = content[:max_length]
 
         return {
             "success": True,
@@ -104,25 +108,118 @@ def _run_fetch_file(
             "mode": mode,
             "method": method,
             "content": content,
-            "total_length": total_length,
-            "chars_returned": len(content),
-            "truncated": truncated,
             "log": log.strip(),
         }
     finally:
         Path(out_path).unlink(missing_ok=True)
 
 
+def _run_fetch_file(
+    url: str,
+    mode: str,
+    compress: bool,
+    timeout: int,
+    max_length: int,
+    start_index: int,
+    use_cache: bool = True,
+    respect_robots: bool | None = None,
+) -> dict:
+    """抓取一个 URL：先查缓存、再检查 robots.txt、按域名限速，最后返回窗口切片结果。"""
+    if respect_robots is None:
+        respect_robots = DEFAULT_RESPECT_ROBOTS
+    cache_key = f"{normalize_url(url)}|{mode}|{'c' if compress else 'r'}"
+
+    if use_cache:
+        cached = FETCH_CACHE.get(cache_key)
+        if cached is not None:
+            return apply_window({**cached, "url": url, "cached": True}, start_index, max_length)
+
+    if respect_robots and not ROBOTS_CHECKER.allows(url):
+        return {
+            "success": False,
+            "url": url,
+            "mode": mode,
+            "error": "robots.txt 禁止抓取该 URL",
+            "error_code": "ROBOTS_BLOCKED",
+        }
+
+    RATE_LIMITER.wait(url)
+    try:
+        result = _do_fetch_file(url, mode, compress, timeout)
+    except RuntimeError as exc:
+        return {
+            "success": False,
+            "url": url,
+            "mode": mode,
+            "error": str(exc),
+            "error_code": "FETCH_FAILED",
+        }
+
+    if result.get("success"):
+        FETCH_CACHE.put(cache_key, result)
+    return apply_window(result, start_index, max_length)
+
+
 # ---------------------------------------------------------------------------
 # MCP Tools
 # ---------------------------------------------------------------------------
 
+_SEARCH_TIME_RANGES = ("", "day", "week", "month", "year")
+
+
 @mcp.tool()
-def smart3w_search(query: str, count: int = 10) -> str:
-    """Search the web via SearXNG. Returns JSON with title/url/snippet per result."""
+def smart3w_search(
+    query: str,
+    count: int = 10,
+    language: str = "zh-CN",
+    time_range: str = "",
+    categories: str = "",
+    safesearch: int = 0,
+    engines: str = "",
+) -> str:
+    """Search the web via SearXNG (多实例 fallback + 结果去重). Returns JSON.
+
+    Args:
+        query: 搜索关键词
+        count: 返回结果数量 (1-100)
+        language: 语言，如 zh-CN / en-US（留空表示不指定）
+        time_range: 时间范围，可选 day/week/month/year（空表示不限）
+        categories: 搜索分类，逗号分隔，如 general,news,images（空表示默认）
+        safesearch: 安全搜索 0=关闭 1=中等 2=严格
+        engines: 指定引擎，逗号分隔，如 google,bing（空表示 SearXNG 默认）
+
+    Returns:
+        JSON string: {success, query, engine, instance, params, results,
+                      result_count, log}
+    """
     if not query or count < 1 or count > 100:
-        return "❌ query 不能为空，count 必须是 1-100 的整数"
-    return _run_fetch(["search", query, str(count)])
+        return json.dumps({
+            "success": False, "query": query, "results": [], "result_count": 0,
+            "error": "query 不能为空，count 必须是 1-100 的整数",
+        }, ensure_ascii=False)
+    if safesearch not in (0, 1, 2):
+        return json.dumps({
+            "success": False, "query": query, "results": [], "result_count": 0,
+            "error": "safesearch 必须是 0/1/2",
+        }, ensure_ascii=False)
+    if time_range not in _SEARCH_TIME_RANGES:
+        return json.dumps({
+            "success": False, "query": query, "results": [], "result_count": 0,
+            "error": "time_range 必须是 day/week/month/year 之一或留空",
+        }, ensure_ascii=False)
+
+    args = [
+        "search", query, str(count),
+        "--language", language,
+        "--safesearch", str(safesearch),
+    ]
+    if time_range:
+        args += ["--time-range", time_range]
+    if categories:
+        args += ["--categories", categories]
+    if engines:
+        args += ["--engines", engines]
+    return _run_fetch(args)
 
 
 @mcp.tool()
@@ -133,8 +230,10 @@ def smart3w_fetch(
     timeout: int = 30,
     max_length: int = 0,
     start_index: int = 0,
+    use_cache: bool = True,
+    respect_robots: bool | None = None,
 ) -> str:
-    """Fetch and extract content from a webpage.
+    """Fetch and extract content from a webpage (支持 TTL 缓存与 robots 检查).
 
     Args:
         url: The webpage URL to fetch
@@ -145,10 +244,13 @@ def smart3w_fetch(
         timeout: Per-request timeout in seconds
         max_length: Maximum characters of content to return (0 = unlimited)
         start_index: 0-based offset into the extracted content (for pagination)
+        use_cache: Whether to use the in-memory TTL cache (True) or force re-fetch (False)
+        respect_robots: Whether to respect robots.txt; None 表示跟随环境变量
+                        SMART3W_RESPECT_ROBOTS（默认关闭）
 
     Returns:
         JSON string: {success, url, mode, method, content, total_length,
-                      chars_returned, truncated, log}
+                      chars_returned, truncated, cached, log}
     """
     error = None
     if mode not in ("smart", "get", "fetch", "stealthy"):
@@ -164,11 +266,91 @@ def smart3w_fetch(
     if error:
         return json.dumps({"success": False, "url": url, "error": error}, ensure_ascii=False)
 
-    try:
-        result = _run_fetch_file(url, mode, compress, timeout, max_length, start_index)
-    except RuntimeError as exc:
-        result = {"success": False, "url": url, "error": str(exc)}
+    result = _run_fetch_file(
+        url, mode, compress, timeout, max_length, start_index,
+        use_cache=use_cache, respect_robots=respect_robots,
+    )
     return json.dumps(result, ensure_ascii=False)
+
+
+@mcp.tool()
+def smart3w_crawl(
+    urls: list[str],
+    mode: str = "get",
+    compress: bool = True,
+    timeout: int = 20,
+    max_length: int = 5000,
+    concurrency: int = 3,
+    respect_robots: bool = True,
+) -> str:
+    """Batch-fetch multiple URLs (URL 去重 + robots + 限速 + 缓存 + 并发).
+
+    Args:
+        urls: URL 列表（1-100 个）
+        mode: Fetch strategy — smart/get/fetch/stealthy
+        compress: Whether to extract readable content (True) or raw HTML (False)
+        timeout: Per-request timeout in seconds
+        max_length: Maximum characters per result (0 = unlimited)
+        concurrency: Parallel workers (1-8)
+        respect_robots: Whether to respect robots.txt (默认开启)
+
+    Returns:
+        JSON string: {success, requested, unique, duplicates_skipped,
+                      succeeded, failed, mode, results: [...]}
+    """
+    if not urls or len(urls) > 100:
+        return json.dumps({"success": False, "error": "urls 必须是 1-100 个 URL"}, ensure_ascii=False)
+    if mode not in ("smart", "get", "fetch", "stealthy"):
+        return json.dumps({"success": False, "error": f"无效抓取模式: {mode}"}, ensure_ascii=False)
+    if timeout < 1 or timeout > 120:
+        return json.dumps({"success": False, "error": "timeout 必须是 1-120 的整数（秒）"}, ensure_ascii=False)
+    if max_length < 0 or max_length > 200000:
+        return json.dumps({"success": False, "error": "max_length 必须是 0-200000 的整数"}, ensure_ascii=False)
+    if concurrency < 1 or concurrency > 8:
+        return json.dumps({"success": False, "error": "concurrency 必须是 1-8 的整数"}, ensure_ascii=False)
+
+    unique: list[str] = []
+    seen: set[str] = set()
+    for url in urls:
+        if _validate_http_url(url):
+            continue
+        key = normalize_url(url)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(url)
+
+    def _crawl_one(url: str) -> dict:
+        result = {}
+        for attempt in range(3):
+            result = _run_fetch_file(
+                url, mode, compress, timeout, max_length=0, start_index=0,
+                use_cache=True, respect_robots=respect_robots,
+            )
+            if result.get("success") or not is_rate_limited(result.get("error", "")):
+                break
+            time.sleep(1 + attempt)
+        return result
+
+    results: list[dict] = []
+    with ThreadPoolExecutor(max_workers=concurrency) as pool:
+        futures = [pool.submit(_crawl_one, u) for u in unique]
+        for fut in as_completed(futures):
+            results.append(fut.result())
+
+    results = [apply_window(r, 0, max_length) for r in results]
+    succeeded = sum(1 for r in results if r.get("success"))
+    out = {
+        "success": True,
+        "requested": len(urls),
+        "unique": len(unique),
+        "duplicates_skipped": len(urls) - len(unique),
+        "succeeded": succeeded,
+        "failed": len(results) - succeeded,
+        "mode": mode,
+        "results": results,
+    }
+    return json.dumps(out, ensure_ascii=False)
 
 
 @mcp.tool()
