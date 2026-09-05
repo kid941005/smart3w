@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Smart3W 共享 Python 逻辑：搜索 / Sitemap 解析 / 正文压缩。
 
-供 scripts/fetch.sh 以子命令方式调用，替代原先散落在 Bash heredoc 中的内嵌代码：
+供 scripts/fetch.sh 以子命令方式调用：
     python3 smart3w_utils.py search <query> [count] [instance]
     python3 smart3w_utils.py sitemap <url> [max_urls]
     python3 smart3w_utils.py compress <input> <output>
@@ -13,6 +13,7 @@
 import argparse
 import json
 import os
+import re
 import ssl
 import sys
 import urllib.parse
@@ -24,8 +25,9 @@ SEARCH_TIMEOUT = 30
 SITEMAP_TIMEOUT = 15
 
 IMAGE_ATTRS = ("src", "data-src", "data-original")
+WECHAT_IMAGE_ATTRS = ("data-src", "src", "data-original")
 SKIP_TAGS = ("script", "style", "nav", "footer", "header", "aside")
-CONTENT_TAGS = ("p", "section", "blockquote", "ul", "ol", "h1", "h2", "h3", "h4", "img")
+CONTENT_TAGS = ("p", "section", "blockquote", "ul", "ol", "h1", "h2", "h3", "h4", "pre", "table", "img")
 HEADING_LEVELS = {"h1": 1, "h2": 2, "h3": 3, "h4": 4}
 
 
@@ -50,9 +52,9 @@ def _ssl_context():
     return ctx
 
 
-def _img_markdown(node):
+def _img_markdown(node, attrs=IMAGE_ATTRS):
     """从 img 节点提取 Markdown 图片链接；无有效 src 时返回 None。"""
-    for attr in IMAGE_ATTRS:
+    for attr in attrs:
         src = node.get(attr)
         if src:
             if src.startswith("//"):
@@ -81,8 +83,130 @@ def _dedupe_parts(parts):
     return "\n\n".join(lines).strip()
 
 
+def _render_inline(node):
+    """递归渲染行内内容：链接、加粗/斜体、行内代码、换行、图片。"""
+    parts = []
+    for child in getattr(node, "children", []):
+        if isinstance(child, str):
+            parts.append(child)
+            continue
+        name = getattr(child, "name", None)
+        if name is None:
+            parts.append(str(child))
+            continue
+        if name in SKIP_TAGS:
+            continue
+        if name == "img":
+            md = _img_markdown(child)
+            if md:
+                parts.append(md)
+        elif name == "a":
+            text = _render_inline(child).strip()
+            href = child.get("href") or ""
+            parts.append(f"[{text}]({href})" if text and href else text)
+        elif name == "br":
+            parts.append("\n")
+        elif name == "code":
+            parts.append("`" + child.get_text() + "`")
+        elif name in ("strong", "b"):
+            text = _render_inline(child)
+            parts.append(f"**{text}**" if text.strip() else "")
+        elif name in ("em", "i"):
+            text = _render_inline(child)
+            parts.append(f"*{text}*" if text.strip() else "")
+        else:
+            parts.append(_render_inline(child))
+    return "".join(parts)
+
+
+def _paragraph_text(node):
+    """行内渲染后压缩空白，得到单段文本。"""
+    return " ".join(_render_inline(node).split())
+
+
+def _render_table(node):
+    """把 <table> 渲染为 Markdown 表格（首行作为表头）。"""
+    rows = []
+    for tr in node.find_all("tr"):
+        cells = [
+            c.get_text(" ", strip=True).replace("|", "\\|")
+            for c in tr.find_all(["td", "th"], recursive=False)
+        ]
+        if cells:
+            rows.append(cells)
+    if not rows:
+        return ""
+    width = max(len(r) for r in rows)
+    rows = [r + [""] * (width - len(r)) for r in rows]
+    out = ["| " + " | ".join(rows[0]) + " |"]
+    out.append("| " + " | ".join(["---"] * width) + " |")
+    for row in rows[1:]:
+        out.append("| " + " | ".join(row) + " |")
+    return "\n".join(out)
+
+
+def _render_block(node, handled):
+    """渲染一个块级节点为 Markdown 段落列表；consumed 的子节点写入 handled 防止重复输出。"""
+    name = node.name
+    if name == "img":
+        md = _img_markdown(node)
+        return [md] if md else []
+    if name in HEADING_LEVELS:
+        text = _paragraph_text(node)
+        return [("#" * HEADING_LEVELS[name] + " " + text)] if text else []
+    if name == "p":
+        text = _paragraph_text(node)
+        return [text] if text else []
+    if name == "blockquote":
+        for p in node.find_all("p"):
+            handled.add(id(p))
+        text = _paragraph_text(node)
+        return ["> " + text] if text else []
+    if name in ("ul", "ol"):
+        out = []
+        for i, li in enumerate(node.find_all("li", recursive=False), start=1):
+            text = _paragraph_text(li)
+            if text:
+                out.append(f"{i}. {text}" if name == "ol" else f"- {text}")
+        return out
+    if name == "pre":
+        code = node.get_text()
+        return [f"```\n{code}\n```"] if code.strip() else []
+    if name == "table":
+        md = _render_table(node)
+        return [md] if md else []
+    if name == "section":
+        direct_blocks = node.find_all(CONTENT_TAGS, recursive=False)
+        if direct_blocks:
+            out = []
+            for child in direct_blocks:
+                handled.add(id(child))
+                out.extend(_render_block(child, handled))
+            return out
+        text = _paragraph_text(node)
+        return [text] if text else []
+    return []
+
+
+def _extract_blocks(container, wechat=False):
+    """遍历容器，按文档顺序渲染全部块级内容，避免嵌套节点重复输出。"""
+    parts = []
+    handled = set()
+    img_attrs = WECHAT_IMAGE_ATTRS if wechat else IMAGE_ATTRS
+    for node in container.find_all(CONTENT_TAGS):
+        if id(node) in handled:
+            continue
+        if node.name == "img":
+            md = _img_markdown(node, img_attrs)
+            if md:
+                parts.append(md)
+            continue
+        parts.extend(_render_block(node, handled))
+    return parts
+
+
 def compress_html(input_path, output_path):
-    """使用 readability-lxml 提取正文并转为 Markdown；成功返回 True。"""
+    """使用 readability-lxml 提取正文并转为 Markdown（保留链接/列表/表格/代码块）；成功返回 True。"""
     try:
         from bs4 import BeautifulSoup
         from readability import Document
@@ -94,26 +218,15 @@ def compress_html(input_path, output_path):
 
         doc = Document(html)
         title = doc.title().strip()
-        soup = BeautifulSoup(doc.summary(), "html.parser")
+        # content() 比 summary() 保留更多结构（列表/表格/代码块），更利于 Markdown 保真
+        soup = BeautifulSoup(doc.content(), "html.parser")
         for tag in soup.find_all(SKIP_TAGS):
             tag.decompose()
 
         parts = []
         if title:
             parts.append("# " + title)
-
-        # find_all 已递归覆盖所有 <img>，无需再对子节点重复遍历
-        for node in soup.find_all(CONTENT_TAGS):
-            if node.name == "img":
-                md = _img_markdown(node)
-                if md:
-                    parts.append(md)
-                continue
-            text = node.get_text(separator=" ", strip=True)
-            if not text:
-                continue
-            level = HEADING_LEVELS.get(node.name)
-            parts.append(("#" * level + " " if level else "") + text)
+        parts.extend(_extract_blocks(soup, wechat=False))
 
         text = _dedupe_parts(parts)
         if not text:
@@ -146,37 +259,7 @@ def compress_wechat(input_path, output_path):
         if content_div is None:
             return False
 
-        parts = []
-        handled = set()
-        for node in content_div.find_all(CONTENT_TAGS):
-            if id(node) in handled:
-                continue
-            if node.name == "img":
-                md = _img_markdown(node)
-                if md:
-                    parts.append(md)
-                continue
-
-            text = ""
-            if node.name == "p":
-                text = node.get_text(separator=" ", strip=True)
-            elif node.name == "section":
-                direct_ps = node.find_all("p", recursive=False)
-                if direct_ps:
-                    for p in direct_ps:
-                        handled.add(id(p))
-                        p_text = p.get_text(separator=" ", strip=True)
-                        if p_text:
-                            parts.append(p_text)
-                elif not (node.find("img") and not node.get_text(strip=True)):
-                    text = node.get_text(separator=" ", strip=True)
-            else:
-                text = node.get_text(separator=" ", strip=True)
-
-            if text:
-                parts.append(text)
-
-        text = _dedupe_parts(parts)
+        text = _dedupe_parts(_extract_blocks(content_div, wechat=True))
         if not text or len(text) <= 50:
             return False
         with open(output_path, "w", encoding="utf-8") as f:

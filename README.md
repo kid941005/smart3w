@@ -2,7 +2,7 @@
 
 [![OpenClaw](https://img.shields.io/badge/OpenClaw-Compatible-green)](https://github.com/openclaw/openclaw)
 [![MIT](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-2.2.3-blue)](https://github.com/kid941005/smart3w/releases)
+[![Version](https://img.shields.io/badge/Version-2.2.4-blue)](https://github.com/kid941005/smart3w/releases)
 
 集 **SearXNG 网页搜索**、**Sitemap 解析** 与 **智能网页抓取** 于一体。
 
@@ -296,6 +296,12 @@ smart3w/
 ---
 
 ## 📝 更新日志
+
+### 2.2.4 (2026-09-05)
+
+- **MCP 结构化输出**：`smart3w_fetch` 返回 JSON（`success/url/mode/method/content/total_length/chars_returned/truncated/log`），新增 `max_length`、`start_index` 参数
+- **内容保真**：正文压缩保留链接 `[text](href)`、列表、表格、代码块与行内格式
+- **质量保障**：新增 `tests/` 单元测试（压缩、搜索、SSL 上下文），CI 构建前自动运行
 
 ### 2.2.3 (2026-09-05)
 
