@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "smart3w"
-version = "2.2.5"
+version = "2.2.6"
 description = "智能网页搜索与抓取 MCP 服务器（SearXNG + curl + scrapling）"
 readme = "README.md"
 requires-python = ">=3.10"

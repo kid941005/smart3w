@@ -40,7 +40,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy smart3w
 # --------------------------------------------------------------------------
 COPY scripts/ ./scripts/
-COPY mcp_server.py .
+COPY mcp_server.py smart3w_fetch_utils.py ./
 
 RUN chmod +x scripts/fetch.sh
 

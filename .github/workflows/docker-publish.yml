@@ -78,7 +78,13 @@ jobs:
         with:
           context: .
           push: true
+          load: true
           tags: ${{ steps.meta.outputs.tags }}
+
+      - name: Smoke test container startup
+        run: |
+          IMG="${{ env.DOCKER_IMAGE }}:${{ steps.meta.outputs.tag }}"
+          docker run --rm --entrypoint python3 "$IMG" -c "import mcp_server; print('container import OK')"
 
       - name: Create GitHub Release (tag push only)
         if: github.event_name == 'push'

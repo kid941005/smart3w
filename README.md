@@ -2,7 +2,7 @@
 
 [![OpenClaw](https://img.shields.io/badge/OpenClaw-Compatible-green)](https://github.com/openclaw/openclaw)
 [![MIT](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-2.2.5-blue)](https://github.com/kid941005/smart3w/releases)
+[![Version](https://img.shields.io/badge/Version-2.2.6-blue)](https://github.com/kid941005/smart3w/releases)
 
 集 **SearXNG 网页搜索**、**Sitemap 解析** 与 **智能网页抓取** 于一体。
 
@@ -326,6 +326,11 @@ smart3w/
 ---
 
 ## 📝 更新日志
+
+### 2.2.6 (2026-09-06)
+
+- **修复**：Docker 镜像漏复制 `smart3w_fetch_utils.py` 导致容器启动报 `ModuleNotFoundError`，现已修复
+- **CI 增强**：Docker 构建后新增容器启动 smoke test（`import mcp_server`），防止此类"构建通过但启动失败"的问题再次漏网
 
 ### 2.2.5 (2026-09-06)
 
