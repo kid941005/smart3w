@@ -408,6 +408,10 @@ def cmd_search(query, count, instance, language="zh-CN", time_range="", categori
         "results": results,
         "result_count": len(results),
     })
+    # 透传 SearXNG 扩展元数据（仅在存在时附加，避免空字段噪音）
+    for key in ("answers", "corrections", "suggestions", "infoboxes"):
+        if data.get(key):
+            out[key] = data[key]
     if errors:
         out["log"] = "; ".join(errors)
     print(json.dumps(out, ensure_ascii=False))
@@ -448,7 +452,8 @@ def cmd_sitemap(sitemap_url, max_urls):
         if len(urls) > max_urls:
             print(f"\n... 还有 {len(urls) - max_urls} 个URL")
     except Exception as exc:
-        print(f"❌ 解析失败: {exc}")
+        print(f"❌ 解析失败: {exc}", file=sys.stderr)
+        sys.exit(1)
 
 
 def main(argv=None):

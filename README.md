@@ -2,7 +2,7 @@
 
 [![OpenClaw](https://img.shields.io/badge/OpenClaw-Compatible-green)](https://github.com/openclaw/openclaw)
 [![MIT](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-2.2.6-blue)](https://github.com/kid941005/smart3w/releases)
+[![Version](https://img.shields.io/badge/Version-2.2.7-blue)](https://github.com/kid941005/smart3w/releases)
 
 集 **SearXNG 网页搜索**、**Sitemap 解析** 与 **智能网页抓取** 于一体。
 
@@ -17,10 +17,12 @@
 | 🚀 **批量抓取** | `smart3w_crawl` 并发抓取 + URL 去重 |
 | 🔁 **多实例容灾** | 搜索主实例失败自动切换备用 SearXNG 实例 |
 | 🧠 **去重缓存** | URL 规范化 + TTL 缓存，重复请求秒回 |
+| 🗃️ **搜索缓存** | 搜索结果 TTL 缓存 + 透传 answers/corrections/suggestions/infobox |
 | 🤖 **Robots/限速** | 可选遵守 robots.txt，按域名限速防封 |
 | 📱 **微信专取** | 自动识别微信文章，精准提取正文 |
 | 📦 **内容压缩** | readability-lxml 提取正文，节省 50-80% token |
 | 🗺️ **Sitemap** | 支持 Index 和 URL Set 格式 |
+| 🛡️ **SSRF 防护** | 默认拦截内网/保留/特殊用途地址，防服务端请求伪造 |
 | ⚙️ **可定制** | 支持自定义 UA、超时、重试次数 |
 
 ---
@@ -96,7 +98,8 @@ pip install "scrapling[all]>=0.4.2" "readability-lxml>=0.8.0" beautifulsoup4
 ./scripts/fetch.sh search "OpenClaw AI" 5
 ```
 
-返回 JSON 格式结果（标题、URL、摘要、评分、引擎、位置）。支持：
+返回 JSON 格式结果（标题、URL、摘要、评分、引擎、位置）。当 SearXNG 返回扩展元数据时，还会透传
+`answers` / `corrections` / `suggestions` / `infoboxes`。支持：
 
 - `--language zh-CN|en-US|...`：语言（留空表示不指定）
 - `--time-range day|week|month|year`：时间范围
@@ -275,6 +278,7 @@ Smart3W 支持自动识别并优化提取微信公众号文章。
 | `SMART3W_RESPECT_ROBOTS` | `0` | 单个 `smart3w_fetch` 是否默认遵守 robots.txt（`1` 开启；`smart3w_crawl` 默认开启） |
 | `SMART3W_ROBOTS_TTL` | `3600` | robots.txt 按域名缓存时间（秒） |
 | `SMART3W_MIN_INTERVAL` | `0.2` | 同一域名两次请求的最小间隔（秒） |
+| `SMART3W_ALLOW_PRIVATE_IPS` | `0` | 是否放行内网/保留地址（SSRF 防护；`1` 关闭拦截，仅限内网可信环境） |
 | `MCP_TRANSPORT` | `streamable-http` | MCP 传输方式（`stdio` / `streamable-http`） |
 | `MCP_PATH` | `/mcp` | Streamable HTTP 端点路径 |
 
@@ -282,9 +286,10 @@ Smart3W 支持自动识别并优化提取微信公众号文章。
 SEARXNG_INSTANCE="https://your-searxng.com" ./scripts/fetch.sh search "关键词"
 ```
 
-> **安全说明**：`SMART3W_SSL_VERIFY=0` 会关闭 TLS 证书校验（存在中间人风险），仅应在自建实例
-> 使用自签证书且无法更换证书时临时开启。另外，MCP 服务默认监听 `0.0.0.0:50826` 且无内置鉴权，
-> 部署到公网时请务必放在带认证/限流的反向代理后面，并避免让不可信调用方传入内网 URL（SSRF 风险）。
+> **安全说明**：MCP 服务默认监听 `0.0.0.0:50826` 且无内置鉴权，部署到公网时请务必放在带认证/限流的
+> 反向代理后面。默认开启 SSRF 防护：抓取目标解析到内网/保留地址时会被拦截（`SMART3W_ALLOW_PRIVATE_IPS=1`
+> 可关闭，仅限内网可信环境）。`SMART3W_SSL_VERIFY=0` 会关闭 TLS 证书校验（存在中间人风险），仅应在自建实例
+> 使用自签证书且无法更换证书时临时开启。
 
 ---
 
@@ -326,6 +331,14 @@ smart3w/
 ---
 
 ## 📝 更新日志
+
+### 2.2.7 (2026-09-07)
+
+- **安全（P0）**：新增 SSRF 防护，`smart3w_fetch` / `smart3w_crawl` / `smart3w_sitemap` 默认拦截解析到内网/保留/特殊用途地址的目标（`SMART3W_ALLOW_PRIVATE_IPS=1` 可关闭，仅限内网可信环境）
+- **MCP 结构化输出（P1）**：全部工具返回值从 JSON 字符串改为结构化 `dict`，MCP Schema 自动生成真实 JSON 字段定义，LLM 调用更可靠
+- **搜索缓存（P1）**：`smart3w_search` 新增 TTL 结果缓存，相同查询/参数组合 300 秒内秒回（命中时带 `cached: true`）
+- **搜索元数据（P1）**：透传 SearXNG 的 `answers` / `corrections` / `suggestions` / `infoboxes`，仅在存在时附加
+- **Sitemap 错误语义**：`cmd_sitemap` 解析失败时错误走 stderr 并以非零退出码返回，MCP 层可正确返回结构化错误
 
 ### 2.2.6 (2026-09-06)
 
