@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "smart3w"
-version = "2.2.7"
+version = "2.2.8"
 description = "智能网页搜索与抓取 MCP 服务器（SearXNG + curl + scrapling）"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -25,7 +25,7 @@ dev = [
 ]
 
 [tool.setuptools]
-py-modules = ["mcp_server", "smart3w_fetch_utils"]
+py-modules = ["mcp_server", "smart3w_fetch_utils", "smart3w_url_utils"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
