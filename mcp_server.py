@@ -86,13 +86,27 @@ def _run_fetch(args: list[str], timeout: int = DEFAULT_TIMEOUT) -> str:
     return result.stdout
 
 
+def _read_effective_url(path: str) -> str | None:
+    """读取 curl 最终 URL 侧车文件（由 fetch.sh --effective-url 写入）；缺失或为空返回 None。"""
+    p = Path(path)
+    if not p.exists():
+        return None
+    url = p.read_text(encoding="utf-8", errors="replace").strip()
+    return url or None
+
+
 def _do_fetch_file(url: str, mode: str, compress: bool, timeout: int) -> dict:
     """真正调用 fetch.sh 抓取一个 URL，返回包含完整正文的结构化结果。"""
     with tempfile.NamedTemporaryFile(mode="w+", suffix=".md", delete=False) as tmp:
         out_path = tmp.name
+    effective_path = f"{out_path}.effective"
 
     try:
-        args = [mode, url, out_path, "--timeout", str(timeout), "--retry", str(FETCH_RETRY)]
+        args = [
+            mode, url, out_path,
+            "--timeout", str(timeout), "--retry", str(FETCH_RETRY),
+            "--effective-url", effective_path,
+        ]
         if not compress:
             args.append("--no-compress")
 
@@ -104,7 +118,21 @@ def _do_fetch_file(url: str, mode: str, compress: bool, timeout: int) -> dict:
         if m:
             method = m.group(1)
 
-        return {
+        effective_url = _read_effective_url(effective_path)
+        if effective_url:
+            blocked = ssrf_blocked(effective_url)
+            if blocked:
+                return {
+                    "success": False,
+                    "url": url,
+                    "mode": mode,
+                    "method": method,
+                    "effective_url": effective_url,
+                    "error": f"重定向目标被拦截: {blocked}",
+                    "error_code": "SSRF_BLOCKED",
+                }
+
+        result = {
             "success": True,
             "url": url,
             "mode": mode,
@@ -112,8 +140,12 @@ def _do_fetch_file(url: str, mode: str, compress: bool, timeout: int) -> dict:
             "content": content,
             "log": log.strip(),
         }
+        if effective_url:
+            result["effective_url"] = effective_url
+        return result
     finally:
         Path(out_path).unlink(missing_ok=True)
+        Path(effective_path).unlink(missing_ok=True)
 
 
 def _run_fetch_file(

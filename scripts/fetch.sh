@@ -23,6 +23,7 @@ TIMEOUT_CURL=15
 TIMEOUT_SCRAPLING=10
 TIMEOUT_STEALTHY=20
 RETRY=2
+EFFECTIVE_URL_FILE=""
 
 # 解析参数
 REMOTE_ARGS=()
@@ -45,6 +46,11 @@ while [[ $# -gt 0 ]]; do
             [[ $# -ge 2 ]] || { echo "--retry 需要一个正整数参数" >&2; exit 1; }
             [[ "$2" =~ ^[1-9][0-9]*$ ]] || { echo "--retry 必须为正整数" >&2; exit 1; }
             RETRY="$2"
+            shift 2
+            ;;
+        --effective-url)
+            [[ $# -ge 2 ]] || { echo "--effective-url 需要一个参数" >&2; exit 1; }
+            EFFECTIVE_URL_FILE="$2"
             shift 2
             ;;
         --language|--time-range|--categories|--safesearch|--engines)
@@ -87,6 +93,20 @@ _fetch_by_curl() {
     local url="$1"
     local output="$2"
     local attempt=1
+    local -a curl_args=(
+        -f -L -s --compressed
+        -A "$USER_AGENT"
+        -H "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+        -H "Accept-Language: zh-CN,zh;q=0.9,en;q=0.8"
+        -H "Accept-Encoding: gzip, deflate, br"
+        -H "Connection: keep-alive"
+        -H "Cache-Control: no-cache"
+        --connect-timeout 10
+        --max-time "$TIMEOUT_CURL"
+        --max-redirs 10
+        -o "$output"
+        "$url"
+    )
     
     _info "策略1: curl 抓取..."
     
@@ -94,17 +114,12 @@ _fetch_by_curl() {
         [[ $attempt -gt 1 ]] && _info "  第 $attempt/$RETRY 次尝试..."
         
         # curl 抓取，带完整请求头和压缩支持
-        curl -f -L -s --compressed \
-            -A "$USER_AGENT" \
-            -H "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8" \
-            -H "Accept-Language: zh-CN,zh;q=0.9,en;q=0.8" \
-            -H "Accept-Encoding: gzip, deflate, br" \
-            -H "Connection: keep-alive" \
-            -H "Cache-Control: no-cache" \
-            --connect-timeout 10 \
-            --max-time "$TIMEOUT_CURL" \
-            -o "$output" \
-            "$url" 2>/dev/null
+        # MCP 模式额外把最终 URL（跟随重定向后）写入侧车文件，供上层做 SSRF 复查
+        if [[ -n "$EFFECTIVE_URL_FILE" ]]; then
+            curl "${curl_args[@]}" -w $'\n%{url_effective}' >"$EFFECTIVE_URL_FILE" 2>/dev/null
+        else
+            curl "${curl_args[@]}" 2>/dev/null
+        fi
         
         if _is_valid_file "$output"; then
             local size=$(wc -c < "$output")

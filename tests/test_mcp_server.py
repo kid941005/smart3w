@@ -64,3 +64,43 @@ def test_search_does_not_cache_failures(monkeypatch):
     mcp_server.smart3w_search("cache-miss", 5)
 
     assert len(calls) == 2
+
+
+def test_read_effective_url_missing_or_empty(tmp_path):
+    p = tmp_path / "x.effective"
+    assert mcp_server._read_effective_url(str(p)) is None
+    p.write_text("   ", encoding="utf-8")
+    assert mcp_server._read_effective_url(str(p)) is None
+    p.write_text("\nhttps://example.com/final\n", encoding="utf-8")
+    assert mcp_server._read_effective_url(str(p)) == "https://example.com/final"
+
+
+def test_do_fetch_file_blocks_redirect_to_private(monkeypatch):
+    def fake_run_fetch(args, timeout=mcp_server.DEFAULT_TIMEOUT):
+        Path(args[2]).write_text("内网敏感内容", encoding="utf-8")
+        eff = args[args.index("--effective-url") + 1]
+        Path(eff).write_text("http://127.0.0.1/admin", encoding="utf-8")
+        return "   方法: curl\n"
+
+    monkeypatch.setattr(mcp_server, "_run_fetch", fake_run_fetch)
+    result = mcp_server._do_fetch_file("http://example.com/", "get", True, 30)
+
+    assert result["success"] is False
+    assert result["error_code"] == "SSRF_BLOCKED"
+    assert result["effective_url"] == "http://127.0.0.1/admin"
+    assert "content" not in result
+
+
+def test_do_fetch_file_includes_effective_url(monkeypatch):
+    def fake_run_fetch(args, timeout=mcp_server.DEFAULT_TIMEOUT):
+        Path(args[2]).write_text("页面内容", encoding="utf-8")
+        eff = args[args.index("--effective-url") + 1]
+        Path(eff).write_text("http://93.184.216.34/final", encoding="utf-8")
+        return "   方法: curl\n"
+
+    monkeypatch.setattr(mcp_server, "_run_fetch", fake_run_fetch)
+    result = mcp_server._do_fetch_file("http://example.com/", "get", True, 30)
+
+    assert result["success"] is True
+    assert result["effective_url"] == "http://93.184.216.34/final"
+    assert result["content"] == "页面内容"

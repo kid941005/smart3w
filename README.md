@@ -2,7 +2,7 @@
 
 [![OpenClaw](https://img.shields.io/badge/OpenClaw-Compatible-green)](https://github.com/openclaw/openclaw)
 [![MIT](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-2.2.7-blue)](https://github.com/kid941005/smart3w/releases)
+[![Version](https://img.shields.io/badge/Version-2.2.8-blue)](https://github.com/kid941005/smart3w/releases)
 
 集 **SearXNG 网页搜索**、**Sitemap 解析** 与 **智能网页抓取** 于一体。
 
@@ -317,7 +317,8 @@ smart3w/
 ├── .gitignore        # Git 忽略文件
 ├── Dockerfile        # Docker 镜像构建（MCP 服务）
 ├── mcp_server.py     # MCP 服务入口（FastMCP + Streamable HTTP）
-├── smart3w_fetch_utils.py  # 抓取治理：URL 规范化 / TTL 缓存 / robots / 限速
+├── smart3w_fetch_utils.py  # 抓取治理：TTL 缓存 / robots / 限速（URL 工具见下）
+├── smart3w_url_utils.py    # 公共 URL 工具：规范化 / 追踪参数 / SSRF 检查
 ├── pyproject.toml    # 项目元数据与依赖声明
 ├── uv.lock           # 依赖锁文件（钉死版本，防上游破坏性升级）
 ├── requirements.txt  # Python 依赖（Docker 构建使用）
@@ -331,6 +332,13 @@ smart3w/
 ---
 
 ## 📝 更新日志
+
+### 2.2.8 (2026-09-07)
+
+- **安全（P0）**：修复 SSRF 重定向绕过——curl 抓取限制最大重定向数（10）并捕获最终 URL，`smart3w_fetch` 对重定向目标做二次 SSRF 校验，命中内网/保留地址时**不返回任何内容**（`error_code: SSRF_BLOCKED`）；`smart3w_sitemap` 同样校验重定向后的最终 URL
+- **架构（P1）**：抽取公共 `smart3w_url_utils.py`，统一 URL 规范化、追踪参数过滤与 SSRF 检查，消除 `smart3w_fetch_utils.py` 与 `scripts/smart3w_utils.py` 的重复实现
+- **可观测性**：`smart3w_fetch` 成功结果新增 `effective_url` 字段（跟随重定向后的最终 URL）
+- **测试**：新增重定向 SSRF 拦截、最终 URL 捕获与公共模块复用测试
 
 ### 2.2.7 (2026-09-07)
 

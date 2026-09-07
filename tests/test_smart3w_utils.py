@@ -5,6 +5,8 @@ import ssl
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 import smart3w_utils as su  # noqa: E402
@@ -193,6 +195,34 @@ def test_search_omits_empty_metadata(capsys, monkeypatch):
     assert data["success"] is True
     for key in ("answers", "corrections", "suggestions", "infoboxes"):
         assert key not in data
+
+
+def test_sitemap_blocks_redirect_to_private(capsys, monkeypatch):
+    class FakeSitemapResp:
+        def __init__(self):
+            self._body = (
+                b'<?xml version="1.0" encoding="UTF-8"?>'
+                b'<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"></urlset>'
+            )
+
+        def read(self):
+            return self._body
+
+        def geturl(self):
+            return "http://127.0.0.1/sitemap.xml"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    monkeypatch.setattr(su.urllib.request, "urlopen", lambda *a, **k: FakeSitemapResp())
+    with pytest.raises(SystemExit) as excinfo:
+        su.cmd_sitemap("http://example.com/sitemap.xml", 10)
+
+    assert excinfo.value.code == 1
+    assert "拦截" in capsys.readouterr().err
 
 
 def test_search_falls_back_to_backup_instance(capsys, monkeypatch):

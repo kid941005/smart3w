@@ -1762,7 +1762,7 @@ wheels = [
 
 [[package]]
 name = "smart3w"
-version = "2.2.7"
+version = "2.2.8"
 source = { editable = "." }
 dependencies = [
     { name = "beautifulsoup4" },

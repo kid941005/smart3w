@@ -18,6 +18,13 @@ import sys
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
+from pathlib import Path
+
+# 使子进程脚本可以引用仓库根目录的公共模块（无论从哪个 cwd 启动）
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from smart3w_fetch_utils import ssrf_blocked  # noqa: E402
+from smart3w_url_utils import normalize_url  # noqa: E402
 
 DEFAULT_INSTANCE = "https://searxng.hqgg.top:59826"
 SEARCH_TIMEOUT = 30
@@ -25,10 +32,6 @@ SITEMAP_TIMEOUT = 15
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
 SEARCH_TIME_RANGES = ("", "day", "week", "month", "year")
-TRACKING_PARAMS = frozenset({
-    "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content",
-    "fbclid", "gclid", "ref", "spm", "from",
-})
 
 IMAGE_ATTRS = ("src", "data-src", "data-original")
 WECHAT_IMAGE_ATTRS = ("data-src", "src", "data-original")
@@ -289,33 +292,6 @@ def _search_instances(primary):
     return seen
 
 
-def _normalize_result_url(url):
-    """结果 URL 规范化：去 fragment/默认端口/常见追踪参数，query 按键排序。"""
-    raw = (url or "").strip()
-    try:
-        parsed = urllib.parse.urlsplit(raw)
-    except ValueError:
-        return raw
-    scheme = parsed.scheme.lower()
-    host = (parsed.hostname or "").lower()
-    if scheme not in ("http", "https") or not host:
-        return raw
-    try:
-        port = parsed.port
-    except ValueError:
-        port = None
-    if port is not None and (
-        (scheme == "http" and port == 80) or (scheme == "https" and port == 443)
-    ):
-        port = None
-    netloc = host if port is None else f"{host}:{port}"
-    query = urllib.parse.urlencode(sorted(
-        (k, v) for k, v in urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
-        if k.lower() not in TRACKING_PARAMS
-    ))
-    return urllib.parse.urlunsplit((scheme, netloc, parsed.path or "/", query, ""))
-
-
 def _fetch_search(instance, query, count, language, time_range, categories, safesearch, engines):
     """请求单个 SearXNG 实例，返回原始 JSON。"""
     params = {"q": query, "format": "json"}
@@ -368,7 +344,7 @@ def cmd_search(query, count, instance, language="zh-CN", time_range="", categori
             continue
         used_instance = inst
         for r in data.get("results", []):
-            key = _normalize_result_url(r.get("url", ""))
+            key = normalize_url(r.get("url", ""))
             if not key:
                 continue
             if key in merged:
@@ -423,6 +399,11 @@ def cmd_sitemap(sitemap_url, max_urls):
     try:
         with urllib.request.urlopen(req, context=_ssl_context(), timeout=SITEMAP_TIMEOUT) as resp:
             content = resp.read().decode("utf-8", errors="replace")
+            # 校验重定向后的最终 URL，防止 302 跳到内网/保留地址绕过 SSRF
+            blocked = ssrf_blocked(resp.geturl())
+            if blocked:
+                print(f"❌ 重定向目标被拦截: {blocked}", file=sys.stderr)
+                sys.exit(1)
 
         root = ET.fromstring(content)
         sm_ns = "{http://www.sitemaps.org/schemas/sitemap/0.9}"
