@@ -32,3 +32,6 @@ Thumbs.db
 # Smart3W runtime output
 smoke_output.md
 fetch_result.md
+
+# CodeGraph local index
+.codegraph/

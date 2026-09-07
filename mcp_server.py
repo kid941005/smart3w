@@ -22,6 +22,7 @@ from smart3w_fetch_utils import (
     apply_window,
     is_rate_limited,
     normalize_url,
+    ssrf_blocked,
 )
 
 SERVER_DIR = Path(__file__).parent.absolute()
@@ -35,6 +36,7 @@ _STRATEGY_COUNT = {"get": 1, "fetch": 1, "stealthy": 1, "smart": 3}
 
 # 抓取治理：URL 去重缓存 / robots / 按域名限速
 FETCH_CACHE = TTLCache()
+SEARCH_CACHE = TTLCache()
 ROBOTS_CHECKER = RobotsChecker()
 RATE_LIMITER = DomainRateLimiter()
 
@@ -64,7 +66,7 @@ def _validate_http_url(url: str) -> str | None:
         return f"URL 格式无效: {exc}"
     if parsed.scheme not in ("http", "https") or not parsed.netloc:
         return "仅支持 http/https URL"
-    return None
+    return ssrf_blocked(url)
 
 
 def _run_fetch(args: list[str], timeout: int = DEFAULT_TIMEOUT) -> str:
@@ -176,8 +178,8 @@ def smart3w_search(
     categories: str = "",
     safesearch: int = 0,
     engines: str = "",
-) -> str:
-    """Search the web via SearXNG (多实例 fallback + 结果去重). Returns JSON.
+) -> dict[str, object]:
+    """Search the web via SearXNG (多实例 fallback + 结果去重 + TTL 缓存).
 
     Args:
         query: 搜索关键词
@@ -189,24 +191,33 @@ def smart3w_search(
         engines: 指定引擎，逗号分隔，如 google,bing（空表示 SearXNG 默认）
 
     Returns:
-        JSON string: {success, query, engine, instance, params, results,
-                      result_count, log}
+        dict: {success, query, engine, instance, params, results,
+               result_count, answers?, corrections?, suggestions?,
+               infoboxes?, cached?, log}
     """
     if not query or count < 1 or count > 100:
-        return json.dumps({
+        return {
             "success": False, "query": query, "results": [], "result_count": 0,
             "error": "query 不能为空，count 必须是 1-100 的整数",
-        }, ensure_ascii=False)
+        }
     if safesearch not in (0, 1, 2):
-        return json.dumps({
+        return {
             "success": False, "query": query, "results": [], "result_count": 0,
             "error": "safesearch 必须是 0/1/2",
-        }, ensure_ascii=False)
+        }
     if time_range not in _SEARCH_TIME_RANGES:
-        return json.dumps({
+        return {
             "success": False, "query": query, "results": [], "result_count": 0,
             "error": "time_range 必须是 day/week/month/year 之一或留空",
-        }, ensure_ascii=False)
+        }
+
+    cache_key = (
+        f"search|{query}|{count}|{language}|{time_range}|"
+        f"{categories}|{safesearch}|{engines}"
+    )
+    cached = SEARCH_CACHE.get(cache_key)
+    if cached is not None:
+        return {**cached, "cached": True}
 
     args = [
         "search", query, str(count),
@@ -219,7 +230,16 @@ def smart3w_search(
         args += ["--categories", categories]
     if engines:
         args += ["--engines", engines]
-    return _run_fetch(args)
+    try:
+        data = json.loads(_run_fetch(args))
+    except (RuntimeError, json.JSONDecodeError) as exc:
+        return {
+            "success": False, "query": query, "results": [], "result_count": 0,
+            "error": f"搜索失败: {exc}",
+        }
+    if data.get("success"):
+        SEARCH_CACHE.put(cache_key, data)
+    return data
 
 
 @mcp.tool()
@@ -232,7 +252,7 @@ def smart3w_fetch(
     start_index: int = 0,
     use_cache: bool = True,
     respect_robots: bool | None = None,
-) -> str:
+) -> dict[str, object]:
     """Fetch and extract content from a webpage (支持 TTL 缓存与 robots 检查).
 
     Args:
@@ -249,8 +269,8 @@ def smart3w_fetch(
                         SMART3W_RESPECT_ROBOTS（默认关闭）
 
     Returns:
-        JSON string: {success, url, mode, method, content, total_length,
-                      chars_returned, truncated, cached, log}
+        dict: {success, url, mode, method, content, total_length,
+               chars_returned, truncated, cached, log}
     """
     error = None
     if mode not in ("smart", "get", "fetch", "stealthy"):
@@ -264,13 +284,13 @@ def smart3w_fetch(
     else:
         error = _validate_http_url(url)
     if error:
-        return json.dumps({"success": False, "url": url, "error": error}, ensure_ascii=False)
+        return {"success": False, "url": url, "error": error}
 
     result = _run_fetch_file(
         url, mode, compress, timeout, max_length, start_index,
         use_cache=use_cache, respect_robots=respect_robots,
     )
-    return json.dumps(result, ensure_ascii=False)
+    return result
 
 
 @mcp.tool()
@@ -282,7 +302,7 @@ def smart3w_crawl(
     max_length: int = 5000,
     concurrency: int = 3,
     respect_robots: bool = True,
-) -> str:
+) -> dict[str, object]:
     """Batch-fetch multiple URLs (URL 去重 + robots + 限速 + 缓存 + 并发).
 
     Args:
@@ -295,19 +315,19 @@ def smart3w_crawl(
         respect_robots: Whether to respect robots.txt (默认开启)
 
     Returns:
-        JSON string: {success, requested, unique, duplicates_skipped,
-                      succeeded, failed, mode, results: [...]}
+        dict: {success, requested, unique, duplicates_skipped,
+               succeeded, failed, mode, results: [...]}
     """
     if not urls or len(urls) > 100:
-        return json.dumps({"success": False, "error": "urls 必须是 1-100 个 URL"}, ensure_ascii=False)
+        return {"success": False, "error": "urls 必须是 1-100 个 URL"}
     if mode not in ("smart", "get", "fetch", "stealthy"):
-        return json.dumps({"success": False, "error": f"无效抓取模式: {mode}"}, ensure_ascii=False)
+        return {"success": False, "error": f"无效抓取模式: {mode}"}
     if timeout < 1 or timeout > 120:
-        return json.dumps({"success": False, "error": "timeout 必须是 1-120 的整数（秒）"}, ensure_ascii=False)
+        return {"success": False, "error": "timeout 必须是 1-120 的整数（秒）"}
     if max_length < 0 or max_length > 200000:
-        return json.dumps({"success": False, "error": "max_length 必须是 0-200000 的整数"}, ensure_ascii=False)
+        return {"success": False, "error": "max_length 必须是 0-200000 的整数"}
     if concurrency < 1 or concurrency > 8:
-        return json.dumps({"success": False, "error": "concurrency 必须是 1-8 的整数"}, ensure_ascii=False)
+        return {"success": False, "error": "concurrency 必须是 1-8 的整数"}
 
     unique: list[str] = []
     seen: set[str] = set()
@@ -350,27 +370,43 @@ def smart3w_crawl(
         "mode": mode,
         "results": results,
     }
-    return json.dumps(out, ensure_ascii=False)
+    return out
 
 
 @mcp.tool()
-def smart3w_sitemap(url: str, max_urls: int = 50) -> str:
-    """Parse a sitemap (supports index and URL-set formats). Returns discovered URLs."""
+def smart3w_sitemap(url: str, max_urls: int = 50) -> dict[str, object]:
+    """Parse a sitemap (supports index and URL-set formats). Returns discovered URLs.
+
+    Returns:
+        dict: {success, output} 或 {success: False, error}
+    """
     if max_urls < 1 or max_urls > 10000:
-        return "❌ max_urls 必须是 1-10000 的整数"
+        return {"success": False, "error": "max_urls 必须是 1-10000 的整数"}
     url_error = _validate_http_url(url)
     if url_error:
-        return f"❌ {url_error}"
-    return _run_fetch(["sitemap", url, str(max_urls)])
+        return {"success": False, "error": url_error}
+    try:
+        output = _run_fetch(["sitemap", url, str(max_urls)])
+    except RuntimeError as exc:
+        return {"success": False, "error": str(exc)}
+    return {"success": True, "output": output.strip()}
 
 
 @mcp.tool()
-def smart3w_doctor(check_search: bool = False) -> str:
-    """Check if smart3w dependencies are installed and functional."""
+def smart3w_doctor(check_search: bool = False) -> dict[str, object]:
+    """Check if smart3w dependencies are installed and functional.
+
+    Returns:
+        dict: {success, output} 或 {success: False, error}
+    """
     args = ["doctor"]
     if check_search:
         args.append("--check-search")
-    return _run_fetch(args)
+    try:
+        output = _run_fetch(args)
+    except RuntimeError as exc:
+        return {"success": False, "error": str(exc)}
+    return {"success": True, "output": output.strip()}
 
 
 # ---------------------------------------------------------------------------

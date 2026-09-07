@@ -1,5 +1,6 @@
 """smart3w_fetch_utils 单元测试（纯标准库，无真实网络依赖）。"""
 
+import socket
 import sys
 import time
 import urllib.robotparser
@@ -12,8 +13,10 @@ from smart3w_fetch_utils import (  # noqa: E402
     RobotsChecker,
     TTLCache,
     apply_window,
+    is_private_ip,
     is_rate_limited,
     normalize_url,
+    ssrf_blocked,
 )
 
 
@@ -106,3 +109,49 @@ def test_apply_window_slices_and_reports():
     full = apply_window(result, start_index=0, max_length=0)
     assert full["content"] == "0123456789"
     assert full["truncated"] is False
+
+
+def test_is_private_ip():
+    assert is_private_ip("127.0.0.1")
+    assert is_private_ip("10.0.0.1")
+    assert is_private_ip("172.16.0.1")
+    assert is_private_ip("192.168.1.1")
+    assert is_private_ip("169.254.0.1")
+    assert is_private_ip("::1")
+    assert is_private_ip("fc00::1")
+    assert not is_private_ip("8.8.8.8")
+    assert not is_private_ip("1.1.1.1")
+    assert not is_private_ip("2606:4700:4700::1111")
+
+
+def test_ssrf_blocked_blocks_private_ip_and_localhost():
+    assert ssrf_blocked("http://127.0.0.1/admin")
+    assert ssrf_blocked("http://10.0.0.1/")
+    assert ssrf_blocked("http://192.168.1.1/")
+    assert ssrf_blocked("http://[::1]/")
+
+
+def test_ssrf_blocked_allows_public_ip_and_public_host():
+    assert ssrf_blocked("http://8.8.8.8/") is None
+    assert ssrf_blocked("https://example.com/") is None
+
+
+def test_ssrf_blocked_blocks_hostname_resolving_to_private(monkeypatch):
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda host, *a, **k: [(2, 1, 6, "", ("10.0.0.5", 0))],
+    )
+    err = ssrf_blocked("http://internal.example.com/")
+    assert err is not None
+    assert "10.0.0.5" in err
+
+
+def test_ssrf_blocked_allow_private_ips_env(monkeypatch):
+    monkeypatch.setenv("SMART3W_ALLOW_PRIVATE_IPS", "1")
+    assert ssrf_blocked("http://127.0.0.1/") is None
+    assert ssrf_blocked("http://192.168.1.1/") is None
+
+
+def test_ssrf_blocked_missing_host():
+    assert ssrf_blocked("http:///path") is not None

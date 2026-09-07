@@ -159,6 +159,42 @@ def test_search_passes_params_and_enriches_results(capsys, monkeypatch):
     assert data["results"][0]["positions"] == [1]
 
 
+def test_search_passes_through_metadata(capsys, monkeypatch):
+    body = {
+        "results": [{"title": "t", "url": "https://example.com/a", "content": "c"}],
+        "answers": ["答案"],
+        "corrections": ["corrected"],
+        "suggestions": ["s1", "s2"],
+        "infoboxes": [{"infobox": "box", "content": "content"}],
+    }
+
+    def fake_urlopen(req, context=None, timeout=None):
+        return _FakeResp(json.dumps(body).encode("utf-8"))
+
+    monkeypatch.setattr(su.urllib.request, "urlopen", fake_urlopen)
+    su.cmd_search("q", 5, "https://a.example")
+    data = json.loads(capsys.readouterr().out)
+
+    assert data["success"] is True
+    assert data["answers"] == ["答案"]
+    assert data["corrections"] == ["corrected"]
+    assert data["suggestions"] == ["s1", "s2"]
+    assert data["infoboxes"][0]["infobox"] == "box"
+
+
+def test_search_omits_empty_metadata(capsys, monkeypatch):
+    def fake_urlopen(req, context=None, timeout=None):
+        return _FakeResp(b'{"results": [{"title": "t", "url": "https://example.com/a", "content": "c"}]}')
+
+    monkeypatch.setattr(su.urllib.request, "urlopen", fake_urlopen)
+    su.cmd_search("q", 5, "https://a.example")
+    data = json.loads(capsys.readouterr().out)
+
+    assert data["success"] is True
+    for key in ("answers", "corrections", "suggestions", "infoboxes"):
+        assert key not in data
+
+
 def test_search_falls_back_to_backup_instance(capsys, monkeypatch):
     calls = []
 
