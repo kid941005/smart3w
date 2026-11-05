@@ -1,7 +1,7 @@
 ---
 name: smart3w
 description: 智能网页抓取路由 + SearXNG 搜索。支持 4 种明确语义的抓取方式：get 使用 Python HTTP（逐跳 SSRF/robots，失败回退 curl），fetch 使用 scrapling extract fetch + --real-chrome，stealthy 使用 scrapling stealthy-fetch + --real-chrome，smart 按 Python HTTP → curl → fetch → stealthy 自动降级。支持并发批量抓取、URL 去重缓存、robots.txt 检查与按域名限速；搜索支持多 SearXNG 实例故障转移与语言/时间/分类/安全搜索/引擎参数。默认输出尽量为 Markdown：普通网页提取正文并尽量保留图片为 Markdown 图片链接，微信文章按正文段落输出并保留插图。
-version: 2.3.1
+version: 2.3.2
 license: MIT
 ---
 
@@ -196,7 +196,10 @@ license: MIT
 | `SMART3W_MIN_INTERVAL` | `0.2` | 同一域名两次请求的最小间隔（秒） |
 | `SMART3W_ALLOW_PRIVATE_IPS` | `0` | 是否放行内网/保留地址（SSRF 防护；`1` 关闭拦截，仅限内网可信环境） |
 | `SMART3W_ALLOWED_HOSTS` | 空 | 可选主机白名单，逗号分隔；支持精确域名、IP 和 `*.example.com` |
-| `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` | 空 | Python HTTP 抓取器与 curl 读取的标准代理变量 |
+| `SMART3W_PROXY_URL` | 空 | 显式出口代理，供 Python HTTP、curl 与 scrapling 使用 |
+| `SMART3W_TRUST_PROXY_DNS` | `0` | 设为 `1` 且配置代理时，主机名交由代理侧解析；代理必须限制出口 |
+| `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` | 空 | 标准代理变量，供 `urllib` 搜索/Sitemap 与 curl 使用 |
+| `NO_PROXY` | 空 | 不走代理的主机；使用代理时包含内部服务地址 |
 | `MCP_TRANSPORT` | `streamable-http` | MCP 传输方式（`stdio` / `streamable-http`） |
 | `MCP_PATH` | `/mcp` | Streamable HTTP 端点路径 |
 

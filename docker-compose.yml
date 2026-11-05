@@ -6,10 +6,18 @@ services:
     init: true
     ports:
       - "50826:50826"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       SEARXNG_INSTANCE: ${SEARXNG_INSTANCE:-https://searxng.hqgg.top:59826}
       SMART3W_ALLOWED_HOSTS: ${SMART3W_ALLOWED_HOSTS:-}
       SMART3W_RESPECT_ROBOTS: ${SMART3W_RESPECT_ROBOTS:-0}
+      SMART3W_PROXY_URL: ${SMART3W_PROXY_URL:-}
+      SMART3W_TRUST_PROXY_DNS: ${SMART3W_TRUST_PROXY_DNS:-0}
+      HTTP_PROXY: ${SMART3W_PROXY_URL:-}
+      HTTPS_PROXY: ${SMART3W_PROXY_URL:-}
+      ALL_PROXY: ${SMART3W_PROXY_URL:-}
+      NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1,::1,searxng}
       MCP_TRANSPORT: streamable-http
       MCP_PATH: /mcp
       SMART3W_HOST: 0.0.0.0

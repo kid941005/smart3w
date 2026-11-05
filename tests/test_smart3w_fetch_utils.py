@@ -208,6 +208,51 @@ def test_ssrf_blocked_allow_private_ips_env(monkeypatch):
     assert ssrf_blocked("http://192.168.1.1/") is None
 
 
+def _fake_private_dns(monkeypatch):
+    monkeypatch.setattr(
+        socket,
+        "getaddrinfo",
+        lambda host, *a, **k: [(10, 1, 6, "", ("2001::1", 0, 0, 0))],
+    )
+
+
+def test_trust_proxy_dns_skips_local_resolution(monkeypatch):
+    monkeypatch.setenv("SMART3W_PROXY_URL", "http://proxy:8080")
+    monkeypatch.setenv("SMART3W_TRUST_PROXY_DNS", "1")
+    monkeypatch.delenv("NO_PROXY", raising=False)
+    monkeypatch.delenv("no_proxy", raising=False)
+    _fake_private_dns(monkeypatch)
+    assert ssrf_blocked("https://www.google.com/") is None
+
+
+def test_trust_proxy_dns_requires_proxy_url(monkeypatch):
+    monkeypatch.delenv("SMART3W_PROXY_URL", raising=False)
+    monkeypatch.setenv("SMART3W_TRUST_PROXY_DNS", "1")
+    monkeypatch.delenv("NO_PROXY", raising=False)
+    monkeypatch.delenv("no_proxy", raising=False)
+    _fake_private_dns(monkeypatch)
+    err = ssrf_blocked("https://www.google.com/")
+    assert err is not None
+    assert "2001::1" in err
+
+
+def test_trust_proxy_dns_respects_no_proxy(monkeypatch):
+    monkeypatch.setenv("SMART3W_PROXY_URL", "http://proxy:8080")
+    monkeypatch.setenv("SMART3W_TRUST_PROXY_DNS", "1")
+    monkeypatch.setenv("NO_PROXY", "www.google.com")
+    _fake_private_dns(monkeypatch)
+    assert ssrf_blocked("https://www.google.com/") is not None
+
+
+def test_trust_proxy_dns_still_blocks_private_literals_and_localhost(monkeypatch):
+    monkeypatch.setenv("SMART3W_PROXY_URL", "http://proxy:8080")
+    monkeypatch.setenv("SMART3W_TRUST_PROXY_DNS", "1")
+    monkeypatch.delenv("NO_PROXY", raising=False)
+    monkeypatch.delenv("no_proxy", raising=False)
+    assert ssrf_blocked("http://127.0.0.1/") is not None
+    assert ssrf_blocked("http://localhost/") is not None
+
+
 def test_allowed_hosts_blocks_unlisted_host(monkeypatch):
     monkeypatch.setenv("SMART3W_ALLOWED_HOSTS", "example.com, *.trusted.com")
     assert ssrf_blocked("https://example.com/a") is None

@@ -23,6 +23,7 @@ SEARXNG_INSTANCE="${SEARXNG_INSTANCE:-https://searxng.hqgg.top:59826}"
 # 默认参数
 COMPRESS=1
 USER_AGENT="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+PROXY_URL="${SMART3W_PROXY_URL:-}"
 TIMEOUT_CURL=15
 TIMEOUT_SCRAPLING=10
 TIMEOUT_STEALTHY=20
@@ -177,6 +178,7 @@ _fetch_by_curl() {
     case "${SMART3W_SSL_VERIFY:-1}" in
         0|false|no|off) curl_args+=("-k") ;;
     esac
+    [[ -n "$PROXY_URL" ]] && curl_args+=("--proxy" "$PROXY_URL")
     curl_args+=("$url")
 
     _info "策略1: curl 抓取..."
@@ -216,11 +218,13 @@ _fetch_by_scrapling() {
     local attempt=1
 
     _info "策略2: scrapling HTTP..."
+    local -a cmd=(scrapling extract fetch "$url" "$output" --real-chrome)
+    [[ -n "$PROXY_URL" ]] && cmd+=(--proxy "$PROXY_URL")
 
     while [[ $attempt -le $MAX_ATTEMPTS ]]; do
         [[ $attempt -gt 1 ]] && _info "  第 $attempt/$MAX_ATTEMPTS 次尝试..."
 
-        if _run_with_timeout "$TIMEOUT_SCRAPLING" scrapling extract fetch "$url" "$output" --real-chrome 2>/dev/null && \
+        if _run_with_timeout "$TIMEOUT_SCRAPLING" "${cmd[@]}" 2>/dev/null && \
            _is_valid_file "$output"; then
             local size
             size=$(wc -c < "$output")
@@ -244,12 +248,13 @@ _fetch_by_stealthy() {
     local attempt=1
 
     _info "策略3: scrapling stealthy (绕过反爬)..."
+    local -a cmd=(scrapling extract stealthy-fetch "$url" "$output" --real-chrome --headless --solve-cloudflare)
+    [[ -n "$PROXY_URL" ]] && cmd+=(--proxy "$PROXY_URL")
 
     while [[ $attempt -le $MAX_ATTEMPTS ]]; do
         [[ $attempt -gt 1 ]] && _info "  第 $attempt/$MAX_ATTEMPTS 次尝试..."
 
-        if _run_with_timeout "$TIMEOUT_STEALTHY" scrapling extract stealthy-fetch "$url" "$output" \
-            --real-chrome --headless --solve-cloudflare 2>/dev/null && \
+        if _run_with_timeout "$TIMEOUT_STEALTHY" "${cmd[@]}" 2>/dev/null && \
            _is_valid_file "$output"; then
             local size
             size=$(wc -c < "$output")
