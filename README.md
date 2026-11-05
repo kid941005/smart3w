@@ -2,7 +2,7 @@
 
 [![OpenClaw](https://img.shields.io/badge/OpenClaw-Compatible-green)](https://github.com/openclaw/openclaw)
 [![MIT](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-2.3.0-blue)](https://github.com/kid941005/smart3w/releases)
+[![Version](https://img.shields.io/badge/Version-2.3.1-blue)](https://github.com/kid941005/smart3w/releases)
 
 集 **SearXNG 网页搜索**、**Sitemap 解析** 与 **智能网页抓取** 于一体。
 
@@ -118,6 +118,37 @@ smart3w-mcp
 | `smart3w_crawl` | 批量抓取（并发、去重、非法 URL 报告、结果保持输入顺序） |
 | `smart3w_sitemap` | Sitemap / Sitemap Index 解析（可选 `recursive` 递归展开） |
 | `smart3w_doctor` | 运行依赖与环境自检 |
+
+### MCP 客户端配置
+
+通用 MCP 客户端（Streamable HTTP）：
+
+```json
+{
+  "mcpServers": {
+    "smart3w": {
+      "type": "streamable-http",
+      "url": "https://smart3w.hqgg.top:59826/mcp"
+    }
+  }
+}
+```
+
+the agent harness（DSH）的 `cordis.patch.yml` 需要显式写 `transport`，不能只写 `url`：
+
+```yaml
+- insert:
+    - id: mcp-smart3w
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: smart3w
+        transport: streamable-http
+        url: https://smart3w.hqgg.top:59826/mcp
+        toolCallTimeoutMs: 120000
+```
+
+> DSH 的 `dsh-mcp-client` 缺少 `transport` 时会报
+> `Cannot read properties of undefined (reading 'sessionId')`；这不是 Smart3W 服务端错误。
 
 ---
 
@@ -376,7 +407,7 @@ smart3w/
 ├── smart3w_fetch_utils.py  # 抓取治理：TTL 缓存 / robots / 限速
 ├── smart3w_url_utils.py    # 公共 URL 工具：规范化 / 追踪参数 / SSRF 检查
 ├── .github/workflows/      # CI（lint + 测试 + 打包）与 Docker 发布
-├── tests/                  # 单元测试（pytest，95 例）
+├── tests/                  # 单元测试（pytest，96 例）
 └── scripts/
     ├── fetch.sh            # 统一入口脚本（搜索 / 抓取 / Sitemap）
     ├── smart3w_http.py     # 轻量 HTTP 抓取：逐跳 SSRF/robots + Accept Markdown + 代理
@@ -404,6 +435,12 @@ Python HTTP/curl/scrapling 策略降级，`smart3w_doctor` 仍需要 shell 环�
 ---
 
 ## 📝 更新日志
+
+### 2.3.1（开发中）
+
+- **SSRF 地址分类**：对齐官方 fetch，补充 `::/96`（IPv4-compatible IPv6）、`64:ff9b:1::/48`（NAT64 本地前缀）、`2001::/23` 与 IANA 公共例外
+- **NAT64 处理**：well-known `64:ff9b::/96` 按嵌入 IPv4 判断，避免误拦公网 NAT64 地址
+- **集成文档**：补充 MCP 客户端与 DSH 的 Streamable HTTP 配置；DSH 必须显式设置 `transport: streamable-http`
 
 ### 2.3.0（开发中）
 

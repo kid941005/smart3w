@@ -25,7 +25,7 @@ from smart3w_url_utils import (  # noqa: F401  # 向后兼容：继续从本模�
     ssrf_blocked,
 )
 
-USER_AGENT = "Smart3W/2.3.0 (+https://github.com/kid941005/smart3w)"
+USER_AGENT = "Smart3W/2.3.1 (+https://github.com/kid941005/smart3w)"
 
 
 def _env_int(name: str, default: int) -> int:

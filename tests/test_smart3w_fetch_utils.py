@@ -164,6 +164,21 @@ def test_is_private_ip():
     assert not is_private_ip("2606:4700:4700::1111")
 
 
+def test_is_private_ip_special_ranges_and_exceptions():
+    # IPv4-compatible IPv6、NAT64 本地前缀、特殊用途 IPv6 都应拦截
+    assert is_private_ip("::7f00:1")
+    assert is_private_ip("64:ff9b:1::1")
+    assert is_private_ip("100::1")
+    assert is_private_ip("2001::1")
+    # well-known NAT64 按嵌入 IPv4 判断
+    assert is_private_ip("64:ff9b::7f00:1")
+    assert not is_private_ip("64:ff9b::808:808")
+    # IANA 公共例外不应误拦
+    assert not is_private_ip("192.0.0.9")
+    assert not is_private_ip("2001:1::1")
+    assert not is_private_ip("2001:3::1")
+
+
 def test_ssrf_blocked_blocks_private_ip_and_localhost():
     assert ssrf_blocked("http://127.0.0.1/admin")
     assert ssrf_blocked("http://10.0.0.1/")

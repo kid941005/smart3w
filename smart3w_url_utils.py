@@ -17,7 +17,8 @@ TRACKING_PARAMS = frozenset({
 })
 
 # 内网 / 保留 / 特殊用途地址段（SSRF 防护用）。
-# IPv4-mapped IPv6（::ffff:a.b.c.d）不在此列表中，由 is_private_ip() 递归判定。
+# 参考 modelcontextprotocol/servers/src/fetch 的地址分类，并补充 NAT64 本地前缀、
+# IPv4-compatible IPv6 与 IANA 公共例外，避免漏拦或误拦。
 PRIVATE_NETWORKS = (
     ipaddress.ip_network("0.0.0.0/8"),
     ipaddress.ip_network("10.0.0.0/8"),
@@ -34,10 +35,12 @@ PRIVATE_NETWORKS = (
     ipaddress.ip_network("203.0.113.0/24"),
     ipaddress.ip_network("224.0.0.0/4"),
     ipaddress.ip_network("240.0.0.0/4"),
-    ipaddress.ip_network("::1/128"),
-    ipaddress.ip_network("::/128"),
-    ipaddress.ip_network("64:ff9b::/96"),      # NAT64
-    ipaddress.ip_network("2001::/32"),         # Teredo
+    # IPv4-compatible IPv6（RFC 4291 2.5.5.1）：包含 :: 与 ::1，且不能路由。
+    ipaddress.ip_network("::/96"),
+    # NAT64 本地使用前缀（RFC 8215），不是公网 NAT64。
+    ipaddress.ip_network("64:ff9b:1::/48"),
+    # 2001::/23 覆盖 Teredo、benchmarking、ORCHID 等特殊用途段。
+    ipaddress.ip_network("2001::/23"),
     ipaddress.ip_network("2001:db8::/32"),
     ipaddress.ip_network("2002::/16"),         # 6to4
     ipaddress.ip_network("fc00::/7"),
@@ -45,6 +48,21 @@ PRIVATE_NETWORKS = (
     ipaddress.ip_network("fec0::/10"),         # 已废弃的 site-local
     ipaddress.ip_network("ff00::/8"),
 )
+
+# 上述特殊段中仍然全球可达的例外（与 CPython ipaddress 的公开例外一致）。
+PUBLIC_EXCEPTIONS = (
+    ipaddress.ip_network("192.0.0.9/32"),
+    ipaddress.ip_network("192.0.0.10/32"),
+    ipaddress.ip_network("2001:1::1/128"),
+    ipaddress.ip_network("2001:1::2/128"),
+    ipaddress.ip_network("2001:3::/32"),
+    ipaddress.ip_network("2001:4:112::/48"),
+    ipaddress.ip_network("2001:20::/28"),
+    ipaddress.ip_network("2001:30::/28"),
+)
+
+# RFC 6052 的 well-known NAT64 前缀：按低 32 位嵌入的 IPv4 判断。
+NAT64_WELL_KNOWN = ipaddress.ip_network("64:ff9b::/96")
 
 _TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
 _FALSE_VALUES = frozenset({"0", "false", "no", "off", ""})
@@ -129,10 +147,11 @@ def env_flag(name: str, default: bool = False) -> bool:
 
 
 def is_private_ip(ip: str) -> bool:
-    """判断 IP 是否属于内网/保留/特殊用途地址段。
+    """判断 IP 是否不属于全球可达的公网地址。
 
     IPv6 地址会先剥离 zone id（如 fe80::1%eth0）；IPv4-mapped IPv6
-    （::ffff:127.0.0.1）按其映射的 IPv4 地址递归判断，避免绕过 SSRF 防护。
+    （::ffff:127.0.0.1）与 well-known NAT64（64:ff9b::/96）按其嵌入的
+    IPv4 地址递归判断；其余特殊用途段与 IANA 公共例外参考官方 fetch 实现。
     """
     try:
         addr = ipaddress.ip_address((ip or "").split("%", 1)[0])
@@ -142,7 +161,14 @@ def is_private_ip(ip: str) -> bool:
         mapped = addr.ipv4_mapped
         if mapped is not None:
             return is_private_ip(str(mapped))
-    return any(addr in net for net in PRIVATE_NETWORKS)
+        if addr in NAT64_WELL_KNOWN:
+            embedded = ipaddress.IPv4Address(int(addr) & 0xFFFFFFFF)
+            return is_private_ip(str(embedded))
+    if any(addr in net for net in PUBLIC_EXCEPTIONS):
+        return False
+    if any(addr in net for net in PRIVATE_NETWORKS):
+        return True
+    return not (addr.is_global and not addr.is_multicast)
 
 
 def resolve_target_ips(host: str) -> list[str]:
