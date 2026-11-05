@@ -2,7 +2,7 @@
 
 [![OpenClaw](https://img.shields.io/badge/OpenClaw-Compatible-green)](https://github.com/openclaw/openclaw)
 [![MIT](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-2.2.9-blue)](https://github.com/kid941005/smart3w/releases)
+[![Version](https://img.shields.io/badge/Version-2.3.0-blue)](https://github.com/kid941005/smart3w/releases)
 
 集 **SearXNG 网页搜索**、**Sitemap 解析** 与 **智能网页抓取** 于一体。
 
@@ -74,7 +74,7 @@ export SMART3W_CHROME="/path/to/chrome"
 - Windows 下需要可用的 `bash`（Git Bash / Cygwin / WSL），MCP 服务会把当前 Python 解释器通过 `SMART3W_PYTHON` 传给 `fetch.sh`
 - 在当前项目实现中，`fetch` = `scrapling extract fetch + --real-chrome`
 - `stealthy` = `scrapling extract stealthy-fetch + --real-chrome`
-- `smart` 会按 `curl → fetch → stealthy` 自动降级
+- `smart` 会按 `Python HTTP → curl → fetch → stealthy` 自动降级
 - 默认输出尽量为 Markdown
 - 普通网页会提取正文并尽量保留图片为 Markdown 图片链接：`![](URL)`
 - 微信文章会优先按正文段落输出 Markdown，并保留正文插图
@@ -160,7 +160,7 @@ CLI 的 `search` 在 `success=false`（参数错误、无可用实例等）时�
 
 ### smart - 智能抓取
 
-**自动降级策略**：curl → scrapling extract fetch → scrapling extract stealthy-fetch
+**自动降级策略**：Python HTTP → curl → scrapling extract fetch → scrapling extract stealthy-fetch
 
 ```bash
 ./scripts/fetch.sh smart "https://example.com" ./output.md
@@ -248,7 +248,8 @@ CLI 的 `search` 在 `success=false`（参数错误、无可用实例等）时�
 
 ```
 get <URL>
-    └─► curl ─► 成功后内容压缩（默认） ─► 输出结果
+    └─► Python HTTP（逐跳 SSRF/robots，优先 Accept Markdown）
+         └─► 失败时回退 curl ─► 成功后内容压缩（默认） ─► 输出结果
 
 fetch <URL>
     └─► scrapling extract fetch + --real-chrome ─► 成功后内容压缩（默认） ─► 输出结果
@@ -257,9 +258,10 @@ stealthy <URL>
     └─► scrapling extract stealthy-fetch + --real-chrome ─► 成功后内容压缩（默认） ─► 输出结果
 
 smart <URL>
-    ├─1─► curl ──────────────────────► [成功] ──┐
-    ├─2─► scrapling extract fetch + --real-chrome ─► [成功] ──┼─► 内容压缩（默认） ─► 输出结果
-    └─3─► scrapling extract stealthy-fetch + --real-chrome ─► [成功] ─┘
+    ├─1─► Python HTTP（逐跳 SSRF/robots） ─► [成功] ──┐
+    ├─2─► curl ──────────────────────────► [成功] ──┤
+    ├─3─► scrapling extract fetch + --real-chrome ─► [成功] ──┼─► 内容压缩（默认） ─► 输出结果
+    └─4─► scrapling extract stealthy-fetch + --real-chrome ─► [成功] ─┘
 
 补充：
 - 抓取成功但压缩失败时，保留原始 HTML
@@ -319,6 +321,8 @@ Smart3W 支持自动识别并优化提取微信公众号文章。
 | `SMART3W_ROBOTS_UA` | Smart3W UA | 检查 robots.txt 时使用的 User-Agent |
 | `SMART3W_MIN_INTERVAL` | `0.2` | 同一域名两次请求的最小间隔（秒） |
 | `SMART3W_ALLOW_PRIVATE_IPS` | `0` | 是否放行内网/保留地址（SSRF 防护；`1` 关闭拦截，仅限内网可信环境） |
+| `SMART3W_ALLOWED_HOSTS` | 空 | 可选主机白名单，逗号分隔；支持精确域名、IP 和 `*.example.com`。设置后只允许白名单主机 |
+| `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` | 空 | Python HTTP 抓取器与 curl 均读取标准代理环境变量；`socks://` 会自动规范为 `socks5://` |
 | `MCP_TRANSPORT` | `streamable-http` | MCP 传输方式（`stdio` / `streamable-http`） |
 | `MCP_PATH` | `/mcp` | Streamable HTTP 端点路径 |
 
@@ -328,12 +332,12 @@ SEARXNG_INSTANCE="https://your-searxng.com" ./scripts/fetch.sh search "关键词
 
 > **安全说明**：MCP 服务默认监听 `0.0.0.0:50826` 且无内置鉴权，部署到公网时请务必放在带认证/限流的
 > 反向代理后面。MCP 工具层默认开启 SSRF 防护：抓取目标解析到内网/保留地址时会被拦截
-> （`SMART3W_ALLOW_PRIVATE_IPS=1` 可关闭，仅限内网可信环境）；直接调用 `scripts/fetch.sh` 时不做该检查，
-> 由调用方自行保证目标可信。`SMART3W_SSL_VERIFY=0` 会关闭 TLS 证书校验（存在中间人风险），仅应在自建实例
-> 使用自签证书且无法更换证书时临时开启。
+> （`SMART3W_ALLOW_PRIVATE_IPS=1` 可关闭，仅限内网可信环境）；设置 `SMART3W_ALLOWED_HOSTS` 后还会限制可访问主机。
+> `SMART3W_SSL_VERIFY=0` 会关闭 TLS 证书校验（存在中间人风险），仅应在自建实例使用自签证书且无法更换证书时临时开启。
 >
-> 重定向 SSRF：当前实现会校验最终 URL，但无法阻止“中间跳转到内网、再跳到公网”的链路。高安全场景请叠加
-> 出站网络策略（只允许公网出口、代理白名单或 egress firewall），不要仅依赖应用层校验。
+> 重定向 SSRF：`get` / `smart` 的 Python HTTP 路径已逐跳校验每个 redirect hop（SSRF + 可选 robots），
+> 但 `fetch` / `stealthy` 的浏览器内部跳转仍只能校验最终 URL；高安全场景请叠加出站网络策略
+> （只允许公网出口、代理白名单或 egress firewall），不要仅依赖应用层校验。
 >
 > 环境变量中的非法数值会回退默认值，不会导致服务启动失败；但生产环境仍建议显式设置并纳入配置管理。
 
@@ -372,9 +376,10 @@ smart3w/
 ├── smart3w_fetch_utils.py  # 抓取治理：TTL 缓存 / robots / 限速
 ├── smart3w_url_utils.py    # 公共 URL 工具：规范化 / 追踪参数 / SSRF 检查
 ├── .github/workflows/      # CI（lint + 测试 + 打包）与 Docker 发布
-├── tests/                  # 单元测试（pytest，84 例）
+├── tests/                  # 单元测试（pytest，94 例）
 └── scripts/
     ├── fetch.sh            # 统一入口脚本（搜索 / 抓取 / Sitemap）
+    ├── smart3w_http.py     # 轻量 HTTP 抓取：逐跳 SSRF/robots + Accept Markdown + 代理
     └── smart3w_utils.py    # 共享 Python 逻辑（搜索 / Sitemap / 正文压缩）
 ```
 
@@ -399,6 +404,14 @@ curl/scrapling 策略降级，`smart3w_doctor` 仍需要 shell 环境检查。
 ---
 
 ## 📝 更新日志
+
+### 2.3.0（开发中）
+
+- **抓取安全**：`get` / `smart` 默认改用 Python HTTP 抓取器，逐跳检查重定向的 SSRF 与 robots.txt；失败时回退 curl
+- **主机白名单**：新增 `SMART3W_ALLOWED_HOSTS`，支持精确域名、IP 与 `*.example.com`
+- **内容协商**：请求优先发送 `Accept: text/markdown`，站点直接返回 Markdown 时跳过 HTML 压缩
+- **代理兼容**：Python 抓取器读取标准 `HTTP_PROXY/HTTPS_PROXY/ALL_PROXY`，并规范 `socks://` 为 `socks5://`
+- **robots 语义**：401/403/5xx 视为完全禁止，其他 4xx 视为无规则
 
 ### 2.2.9 (2026-11-05)
 

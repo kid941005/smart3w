@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 import urllib.robotparser
@@ -24,7 +25,7 @@ from smart3w_url_utils import (  # noqa: F401  # 向后兼容：继续从本模�
     ssrf_blocked,
 )
 
-USER_AGENT = "Smart3W/2.2.9 (+https://github.com/kid941005/smart3w)"
+USER_AGENT = "Smart3W/2.3.0 (+https://github.com/kid941005/smart3w)"
 
 
 def _env_int(name: str, default: int) -> int:
@@ -114,13 +115,23 @@ class RobotsChecker:
         self._lock = threading.Lock()
 
     def _load(self, scheme: str, origin: str) -> urllib.robotparser.RobotFileParser | None:
-        """抓取并解析 robots.txt；任何失败都返回 None（视为无限制）。"""
+        """抓取并解析 robots.txt。
+
+        遵循 RFC 9309：401/403 与 5xx 视为完全禁止；其他 4xx 视为无规则；
+        网络异常则返回 None，保持向后兼容地放行。
+        """
         url = f"{scheme}://{origin}/robots.txt"
         try:
             req = urllib.request.Request(url, headers={"User-Agent": self.user_agent})
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                 # 兼容带 BOM 的 robots.txt（部分站点/Windows 编辑器会写入 UTF-8 BOM）
                 raw = resp.read().decode("utf-8-sig", errors="replace")
+        except urllib.error.HTTPError as exc:
+            if exc.code in (401, 403) or exc.code >= 500:
+                rp = urllib.robotparser.RobotFileParser()
+                rp.parse(["User-agent: *", "Disallow: /"])
+                return rp
+            return None
         except Exception:
             return None
         rp = urllib.robotparser.RobotFileParser()

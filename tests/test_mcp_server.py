@@ -125,7 +125,7 @@ def test_read_effective_url_missing_or_empty(tmp_path):
 
 
 def test_do_fetch_file_blocks_redirect_to_private(monkeypatch):
-    def fake_run_fetch(args, timeout=mcp_server.DEFAULT_TIMEOUT):
+    def fake_run_fetch(args, timeout=mcp_server.DEFAULT_TIMEOUT, respect_robots=None):
         Path(args[2]).write_text("内网敏感内容", encoding="utf-8")
         eff = args[args.index("--effective-url") + 1]
         Path(eff).write_text("http://127.0.0.1/admin", encoding="utf-8")
@@ -141,7 +141,7 @@ def test_do_fetch_file_blocks_redirect_to_private(monkeypatch):
 
 
 def test_do_fetch_file_includes_effective_url(monkeypatch):
-    def fake_run_fetch(args, timeout=mcp_server.DEFAULT_TIMEOUT):
+    def fake_run_fetch(args, timeout=mcp_server.DEFAULT_TIMEOUT, respect_robots=None):
         Path(args[2]).write_text("页面内容", encoding="utf-8")
         eff = args[args.index("--effective-url") + 1]
         Path(eff).write_text("http://93.184.216.34/final", encoding="utf-8")
@@ -173,6 +173,14 @@ def test_fetch_rejects_credentials_in_url():
 
     assert result["success"] is False
     assert result["error_code"] == "INVALID_ARGUMENT"
+
+
+def test_fetch_rejects_host_not_in_allowlist(monkeypatch):
+    monkeypatch.setenv("SMART3W_ALLOWED_HOSTS", "example.com")
+    result = mcp_server.smart3w_fetch("https://other.com/")
+
+    assert result["success"] is False
+    assert "SMART3W_ALLOWED_HOSTS" in result["error"]
 
 
 def test_crawl_reports_invalid_and_duplicate_urls(monkeypatch):

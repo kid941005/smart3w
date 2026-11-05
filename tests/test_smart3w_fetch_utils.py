@@ -83,6 +83,15 @@ def test_robots_unavailable_allows(monkeypatch):
     assert checker.allows("https://example.com/anything") is True
 
 
+def test_robots_server_error_disallows(monkeypatch):
+    def raise_500(*args, **kwargs):
+        raise urllib.error.HTTPError("https://example.com/robots.txt", 500, "boom", {}, None)
+
+    checker = RobotsChecker()
+    monkeypatch.setattr(urllib.request, "urlopen", raise_500)
+    assert checker.allows("https://example.com/anything") is False
+
+
 def test_rate_limiter_spaces_same_domain(monkeypatch):
     sleeps = []
     state = {"now": 0.0}
@@ -182,6 +191,21 @@ def test_ssrf_blocked_allow_private_ips_env(monkeypatch):
     monkeypatch.setenv("SMART3W_ALLOW_PRIVATE_IPS", "1")
     assert ssrf_blocked("http://127.0.0.1/") is None
     assert ssrf_blocked("http://192.168.1.1/") is None
+
+
+def test_allowed_hosts_blocks_unlisted_host(monkeypatch):
+    monkeypatch.setenv("SMART3W_ALLOWED_HOSTS", "example.com, *.trusted.com")
+    assert ssrf_blocked("https://example.com/a") is None
+    assert ssrf_blocked("https://sub.trusted.com/a") is None
+    err = ssrf_blocked("https://other.com/a")
+    assert err is not None
+    assert "SMART3W_ALLOWED_HOSTS" in err
+
+
+def test_allowed_hosts_wildcard_does_not_match_apex(monkeypatch):
+    monkeypatch.setenv("SMART3W_ALLOWED_HOSTS", "*.trusted.com")
+    assert ssrf_blocked("https://trusted.com/a") is not None
+    assert ssrf_blocked("https://a.trusted.com/a") is None
 
 
 def test_ssrf_blocked_missing_host():

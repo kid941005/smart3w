@@ -32,7 +32,7 @@ from smart3w_fetch_utils import (
 )
 from smart3w_url_utils import normalize_url, ssrf_blocked
 
-__version__ = "2.2.9"
+__version__ = "2.3.0"
 
 SERVER_DIR = Path(__file__).resolve().parent
 FETCH_SH = SERVER_DIR / "scripts" / "fetch.sh"
@@ -40,7 +40,7 @@ SEARXNG_INSTANCE = os.environ.get("SEARXNG_INSTANCE", DEFAULT_INSTANCE)
 
 # 与 scripts/fetch.sh 的默认尝试次数保持一致（下方会显式传给 fetch.sh）
 FETCH_RETRY = 2
-_STRATEGY_COUNT = {"get": 1, "fetch": 1, "stealthy": 1, "smart": 3}
+_STRATEGY_COUNT = {"get": 1, "fetch": 1, "stealthy": 1, "smart": 4}
 
 
 def _env_int(name: str, default: int) -> int:
@@ -121,7 +121,11 @@ def _validate_http_url(url: str) -> str | None:
     return ssrf_blocked(url)
 
 
-def _run_fetch(args: list[str], timeout: int = DEFAULT_TIMEOUT) -> str:
+def _run_fetch(
+    args: list[str],
+    timeout: int = DEFAULT_TIMEOUT,
+    respect_robots: bool | None = None,
+) -> str:
     """Run fetch.sh and return stdout.
 
     fetch.sh 约定：数据走 stdout，日志走 stderr，因此成功时只返回 stdout，
@@ -136,6 +140,9 @@ def _run_fetch(args: list[str], timeout: int = DEFAULT_TIMEOUT) -> str:
         "SMART3W_PYTHON": sys.executable,
         "PYTHONIOENCODING": "utf-8",
     }
+    # 让 Python HTTP 抓取器在每个 redirect hop 上检查 robots.txt
+    if respect_robots is not None:
+        env["SMART3W_RESPECT_ROBOTS"] = "1" if respect_robots else "0"
     try:
         result = subprocess.run(
             ["bash", str(FETCH_SH), *args],
@@ -165,7 +172,13 @@ def _read_effective_url(path: str) -> str | None:
     return url or None
 
 
-def _do_fetch_file(url: str, mode: str, compress: bool, timeout: int) -> dict:
+def _do_fetch_file(
+    url: str,
+    mode: str,
+    compress: bool,
+    timeout: int,
+    respect_robots: bool = False,
+) -> dict:
     """真正调用 fetch.sh 抓取一个 URL，返回包含完整正文的结构化结果。"""
     with tempfile.NamedTemporaryFile(mode="w+", suffix=".md", delete=False) as tmp:
         out_path = tmp.name
@@ -180,7 +193,11 @@ def _do_fetch_file(url: str, mode: str, compress: bool, timeout: int) -> dict:
         if not compress:
             args.append("--no-compress")
 
-        log = _run_fetch(args, _fetch_subprocess_timeout(timeout, mode))
+        log = _run_fetch(
+            args,
+            _fetch_subprocess_timeout(timeout, mode),
+            respect_robots=respect_robots,
+        )
         try:
             content = Path(out_path).read_text(encoding="utf-8", errors="replace")
         except OSError as exc:
@@ -253,7 +270,7 @@ def _run_fetch_file(
 
     RATE_LIMITER.wait(url)
     try:
-        result = _do_fetch_file(url, mode, compress, timeout)
+        result = _do_fetch_file(url, mode, compress, timeout, respect_robots=respect_robots)
     except FetchError as exc:
         return {
             "success": False,
