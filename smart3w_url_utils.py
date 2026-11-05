@@ -69,6 +69,8 @@ _FALSE_VALUES = frozenset({"0", "false", "no", "off", ""})
 
 # 可选的主机白名单：逗号分隔，支持精确主机、IP 与 *.example.com。
 ALLOWED_HOSTS_ENV = "SMART3W_ALLOWED_HOSTS"
+PROXY_URL_ENV = "SMART3W_PROXY_URL"
+TRUST_PROXY_DNS_ENV = "SMART3W_TRUST_PROXY_DNS"
 
 
 def _normalize_allowed_host(entry: str) -> str | None:
@@ -146,6 +148,48 @@ def env_flag(name: str, default: bool = False) -> bool:
     return default
 
 
+def proxy_url() -> str:
+    """读取显式出口代理地址；空字符串表示未配置。"""
+    return (os.environ.get(PROXY_URL_ENV) or "").strip()
+
+
+def trust_proxy_dns() -> bool:
+    """是否信任代理侧解析目标域名。
+
+    只有显式设置 SMART3W_PROXY_URL 且 SMART3W_TRUST_PROXY_DNS=1 才生效；
+    这是安全边界转移，代理本身必须实施出口白名单。
+    """
+    return bool(proxy_url()) and env_flag(TRUST_PROXY_DNS_ENV, False)
+
+
+def _no_proxy_entries() -> tuple[str, ...]:
+    raw = os.environ.get("NO_PROXY") or os.environ.get("no_proxy") or ""
+    return tuple(part.strip().lower().rstrip(".") for part in raw.split(",") if part.strip())
+
+
+def host_bypasses_proxy(host: str) -> bool:
+    """目标 host 是否命中 NO_PROXY（命中时不应跳过本地 SSRF 检查）。"""
+    value = (host or "").strip().strip("[]").rstrip(".").lower()
+    for entry in _no_proxy_entries():
+        if entry == "*":
+            return True
+        if entry.startswith("*."):
+            entry = entry[1:]
+        if entry.startswith("."):
+            if value.endswith(entry) and value != entry[1:]:
+                return True
+        elif value == entry:
+            return True
+    return False
+
+
+def _is_local_hostname(host: str) -> bool:
+    value = (host or "").strip().rstrip(".").lower()
+    return value in {"localhost", "localhost.localdomain", "ip6-localhost", "ip6-loopback"} or value.endswith(
+        ".localhost"
+    )
+
+
 def is_private_ip(ip: str) -> bool:
     """判断 IP 是否不属于全球可达的公网地址。
 
@@ -190,6 +234,9 @@ def ssrf_blocked(url: str) -> str | None:
 
     SMART3W_ALLOW_PRIVATE_IPS=1 可关闭（仅建议在内网可信环境使用）。
     SMART3W_ALLOWED_HOSTS 非空时，还会先做主机白名单校验。
+    SMART3W_TRUST_PROXY_DNS=1 且配置 SMART3W_PROXY_URL 时，对未被
+    NO_PROXY 命中的主机名跳过本地 DNS 检查，交由可信代理解析；直接 IP
+    字面量与 localhost 仍会拦截。代理必须自行实施出口白名单。
     注意：DNS 解析与实际连接之间仍存在 rebinding 窗口，生产环境应叠加
     出站网络策略（如只允许公网出口 / 代理白名单）。
     """
@@ -214,6 +261,10 @@ def ssrf_blocked(url: str) -> str | None:
     try:
         ipaddress.ip_address(host)
     except ValueError:
+        if trust_proxy_dns() and not host_bypasses_proxy(host):
+            if _is_local_hostname(host):
+                return "禁止访问本地主机名"
+            return None  # 由可信代理解析目标域名
         ips = resolve_target_ips(host)
         if not ips:
             return None  # 解析失败交给抓取层报错，避免误拦

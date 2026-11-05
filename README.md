@@ -2,7 +2,7 @@
 
 [![OpenClaw](https://img.shields.io/badge/OpenClaw-Compatible-green)](https://github.com/openclaw/openclaw)
 [![MIT](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-2.3.1-blue)](https://github.com/kid941005/smart3w/releases)
+[![Version](https://img.shields.io/badge/Version-2.3.2-blue)](https://github.com/kid941005/smart3w/releases)
 
 集 **SearXNG 网页搜索**、**Sitemap 解析** 与 **智能网页抓取** 于一体。
 
@@ -353,7 +353,10 @@ Smart3W 支持自动识别并优化提取微信公众号文章。
 | `SMART3W_MIN_INTERVAL` | `0.2` | 同一域名两次请求的最小间隔（秒） |
 | `SMART3W_ALLOW_PRIVATE_IPS` | `0` | 是否放行内网/保留地址（SSRF 防护；`1` 关闭拦截，仅限内网可信环境） |
 | `SMART3W_ALLOWED_HOSTS` | 空 | 可选主机白名单，逗号分隔；支持精确域名、IP 和 `*.example.com`。设置后只允许白名单主机 |
-| `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` | 空 | Python HTTP 抓取器与 curl 均读取标准代理环境变量；`socks://` 会自动规范为 `socks5://` |
+| `SMART3W_PROXY_URL` | 空 | 显式出口代理；同时用于 Python HTTP、curl 与 scrapling。支持 `http://`、`https://`、`socks5h://` |
+| `SMART3W_TRUST_PROXY_DNS` | `0` | 设为 `1` 时，未被 `NO_PROXY` 命中的主机名交由代理侧解析；必须同时配置 `SMART3W_PROXY_URL`，且代理必须实施出口白名单 |
+| `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` | 空 | 标准代理变量；用于 `urllib` 搜索/Sitemap 与 curl。`socks://` 在 Python HTTP 路径中会规范为 `socks5://` |
+| `NO_PROXY` | 空 | 不走代理的主机列表；使用代理时应包含 `localhost,127.0.0.1,::1,searxng` 等内部目标 |
 | `MCP_TRANSPORT` | `streamable-http` | MCP 传输方式（`stdio` / `streamable-http`） |
 | `MCP_PATH` | `/mcp` | Streamable HTTP 端点路径 |
 
@@ -361,9 +364,27 @@ Smart3W 支持自动识别并优化提取微信公众号文章。
 SEARXNG_INSTANCE="https://your-searxng.com" ./scripts/fetch.sh search "关键词"
 ```
 
+Docker Compose 代理示例（代理运行在宿主机）：
+
+```yaml
+services:
+  smart3w-mcp:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      SMART3W_PROXY_URL: http://host.docker.internal:7890
+      SMART3W_TRUST_PROXY_DNS: "1"
+      HTTP_PROXY: http://host.docker.internal:7890
+      HTTPS_PROXY: http://host.docker.internal:7890
+      ALL_PROXY: http://host.docker.internal:7890
+      NO_PROXY: localhost,127.0.0.1,::1,searxng
+```
+
 > **安全说明**：MCP 服务默认监听 `0.0.0.0:50826` 且无内置鉴权，部署到公网时请务必放在带认证/限流的
 > 反向代理后面。MCP 工具层默认开启 SSRF 防护：抓取目标解析到内网/保留地址时会被拦截
 > （`SMART3W_ALLOW_PRIVATE_IPS=1` 可关闭，仅限内网可信环境）；设置 `SMART3W_ALLOWED_HOSTS` 后还会限制可访问主机。
+> `SMART3W_TRUST_PROXY_DNS=1` 会把主机名解析交给代理，属于安全边界转移：代理必须限制可访问的出口目标，
+> 否则无法防御“公网域名经代理解析到内网”的 SSRF。直接 IP 字面量和 localhost 仍会被拦截。
 > `SMART3W_SSL_VERIFY=0` 会关闭 TLS 证书校验（存在中间人风险），仅应在自建实例使用自签证书且无法更换证书时临时开启。
 >
 > 重定向 SSRF：`get` / `smart` 的 Python HTTP 路径与 `smart3w_sitemap` 已逐跳校验每个 redirect hop（SSRF + 可选 robots），
@@ -407,7 +428,7 @@ smart3w/
 ├── smart3w_fetch_utils.py  # 抓取治理：TTL 缓存 / robots / 限速
 ├── smart3w_url_utils.py    # 公共 URL 工具：规范化 / 追踪参数 / SSRF 检查
 ├── .github/workflows/      # CI（lint + 测试 + 打包）与 Docker 发布
-├── tests/                  # 单元测试（pytest，96 例）
+├── tests/                  # 单元测试（pytest，100 例）
 └── scripts/
     ├── fetch.sh            # 统一入口脚本（搜索 / 抓取 / Sitemap）
     ├── smart3w_http.py     # 轻量 HTTP 抓取：逐跳 SSRF/robots + Accept Markdown + 代理
@@ -435,6 +456,14 @@ Python HTTP/curl/scrapling 策略降级，`smart3w_doctor` 仍需要 shell 环�
 ---
 
 ## 📝 更新日志
+
+### 2.3.2（开发中）
+
+- **代理出口**：新增 `SMART3W_PROXY_URL`，Python HTTP、curl、scrapling 统一使用显式代理
+- **代理侧 DNS**：新增 `SMART3W_TRUST_PROXY_DNS=1`，在配置可信代理时跳过主机名本地 DNS 检查；直接 IP 与 localhost 仍拦截
+- **SOCKS 支持**：`httpx[socks]` 依赖，支持 SOCKS 代理；`socks5h` 在 Python 路径规范为 `socks5`
+- **NO_PROXY**：命中 `NO_PROXY` 的目标仍执行严格本地 SSRF 检查
+- **Compose**：增加代理变量、`NO_PROXY` 与 `host.docker.internal` 示例
 
 ### 2.3.1（开发中）
 

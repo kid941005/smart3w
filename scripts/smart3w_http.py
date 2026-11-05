@@ -24,7 +24,7 @@ try:
 except ImportError:  # 延迟到实际抓取时再提示，--check-policy 仍可用
     httpx = None  # type: ignore[assignment]
 
-from smart3w_url_utils import env_flag, url_policy_error  # noqa: E402
+from smart3w_url_utils import env_flag, proxy_url, url_policy_error  # noqa: E402
 
 try:
     from smart3w_fetch_utils import RobotsChecker  # noqa: E402
@@ -59,11 +59,29 @@ def _url_policy_error(url: str) -> str | None:
     return url_policy_error(url)
 
 
+def _httpx_proxy_url() -> str | None:
+    """返回 httpx 可接受的显式代理地址；socks5h 转为 socks5。"""
+    raw = proxy_url()
+    if not raw:
+        return None
+    lower = raw.lower()
+    if lower.startswith("socks5h://"):
+        return "socks5://" + raw[len("socks5h://") :]
+    if lower.startswith("socks://"):
+        return "socks5://" + raw[len("socks://") :]
+    return raw
+
+
 def _normalize_proxy_env() -> None:
     """httpx 不接受 socks://，统一改写为 socks5://；同时清理 NO_PROXY 的方括号。"""
     for name in PROXY_ENV_VARS:
         value = os.environ.get(name)
-        if value and value.lower().startswith("socks://"):
+        if not value:
+            continue
+        lower = value.lower()
+        if lower.startswith("socks5h://"):
+            os.environ[name] = "socks5://" + value[len("socks5h://") :]
+        elif lower.startswith("socks://"):
             os.environ[name] = "socks5://" + value[len("socks://") :]
     for name in ("NO_PROXY", "no_proxy"):
         value = os.environ.get(name)
@@ -138,6 +156,7 @@ def fetch_url(
     with httpx.Client(
         follow_redirects=False,
         timeout=httpx.Timeout(timeout, connect=min(timeout, 10)),
+        proxy=_httpx_proxy_url(),
         trust_env=True,
         verify=env_flag("SMART3W_SSL_VERIFY", True),
         headers=headers,
