@@ -3,6 +3,8 @@
 import json
 import ssl
 import sys
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 import pytest
@@ -279,7 +281,7 @@ def test_sitemap_recursive_expands_index(capsys, monkeypatch):
         body = index if url.endswith("sitemap.xml") else child
         return _SitemapResp(body, url=url)
 
-    monkeypatch.setattr(core.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(core, "_open_sitemap", fake_urlopen)
     su.cmd_sitemap("https://example.com/sitemap.xml", 10, recursive=True)
     out = capsys.readouterr().out
 
@@ -300,11 +302,21 @@ def test_sitemap_skips_failed_child(capsys, monkeypatch):
             raise OSError("child down")
         return _SitemapResp(index, url=url)
 
-    monkeypatch.setattr(core.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(core, "_open_sitemap", fake_urlopen)
     su.cmd_sitemap("https://example.com/sitemap.xml", 10, recursive=True)
     out = capsys.readouterr().out
 
     assert "已跳过" in out
+
+
+def test_sitemap_redirect_handler_blocks_private():
+    handler = core._SitemapRedirectHandler()
+    req = urllib.request.Request("https://example.com/sitemap.xml")
+    with pytest.raises(urllib.error.HTTPError) as excinfo:
+        handler.redirect_request(
+            req, None, 302, "Found", {}, "http://127.0.0.1/sitemap.xml"
+        )
+    assert excinfo.value.code == 403
 
 
 def test_sitemap_blocks_private_target(capsys):
@@ -335,7 +347,7 @@ def test_sitemap_blocks_redirect_to_private(capsys, monkeypatch):
         def __exit__(self, *args):
             return False
 
-    monkeypatch.setattr(core.urllib.request, "urlopen", lambda *a, **k: FakeSitemapResp())
+    monkeypatch.setattr(core, "_open_sitemap", lambda *a, **k: FakeSitemapResp())
     with pytest.raises(SystemExit) as excinfo:
         su.cmd_sitemap("http://example.com/sitemap.xml", 10)
 
@@ -444,7 +456,7 @@ def test_sitemap_index_marks_child_sitemaps(capsys, monkeypatch):
         b'<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
         b"<sitemap><loc>https://example.com/sm1.xml</loc></sitemap></sitemapindex>"
     )
-    monkeypatch.setattr(core.urllib.request, "urlopen", lambda *a, **k: _SitemapResp(xml))
+    monkeypatch.setattr(core, "_open_sitemap", lambda *a, **k: _SitemapResp(xml))
     su.cmd_sitemap("https://example.com/sitemap.xml", 10)
 
     out = capsys.readouterr().out
@@ -458,7 +470,7 @@ def test_sitemap_without_namespace(capsys, monkeypatch):
         b'<?xml version="1.0" encoding="UTF-8"?>'
         b"<urlset><url><loc>https://example.com/a</loc></url></urlset>"
     )
-    monkeypatch.setattr(core.urllib.request, "urlopen", lambda *a, **k: _SitemapResp(xml))
+    monkeypatch.setattr(core, "_open_sitemap", lambda *a, **k: _SitemapResp(xml))
     su.cmd_sitemap("https://example.com/sitemap.xml", 10)
 
     assert "https://example.com/a" in capsys.readouterr().out

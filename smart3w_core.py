@@ -10,11 +10,12 @@ import os
 import ssl
 import sys
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 
-from smart3w_url_utils import env_flag, normalize_url, ssrf_blocked
+from smart3w_url_utils import env_flag, normalize_url, url_policy_error
 
 DEFAULT_INSTANCE = "https://searxng.hqgg.top:59826"
 SEARCH_TIMEOUT = 30
@@ -49,6 +50,27 @@ def _ssl_context():
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
     return ctx
+
+
+class _SitemapRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """在 urllib 跟随重定向前校验下一跳，避免先请求内网再拦截。"""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        blocked = url_policy_error(newurl)
+        if blocked:
+            raise urllib.error.HTTPError(
+                newurl, 403, f"重定向目标被拦截: {blocked}", headers, fp
+            )
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _open_sitemap(req):
+    """用带逐跳校验的 opener 打开 sitemap 请求。"""
+    opener = urllib.request.build_opener(
+        _SitemapRedirectHandler(),
+        urllib.request.HTTPSHandler(context=_ssl_context()),
+    )
+    return opener.open(req, timeout=SITEMAP_TIMEOUT)
 
 
 def _img_markdown(node, attrs=IMAGE_ATTRS):
@@ -449,7 +471,7 @@ def search_web(query, count=10, instance=None, language="zh-CN", time_range="",
         return out
 
     if not isinstance(instance, str) or not instance.strip():
-        instance = os.environ.get("SEARXNG_INSTANCE", DEFAULT_INSTANCE)
+        instance = os.environ.get("SEARXNG_INSTANCE") or DEFAULT_INSTANCE
     instance = instance.strip()
     errors = []
     merged = {}
@@ -482,8 +504,14 @@ def search_web(query, count=10, instance=None, language="zh-CN", time_range="",
 
     # 单页通常只返回 10 条左右；只有首屏满页时才继续翻页，避免对短结果集做无谓请求
     page = 1
-    first_page_size = len(first_data.get("results") or [])
+    first_results = first_data.get("results")
+    first_page_size = len(first_results) if isinstance(first_results, list) else 0
     reported_total = first_data.get("number_of_results")
+    if isinstance(reported_total, str):
+        try:
+            reported_total = int(reported_total)
+        except ValueError:
+            reported_total = None
     # 有 total 时以 total 为准；没有时退回“首屏满页”判断，兼容不同 SearXNG 页大小
     should_paginate = (
         isinstance(reported_total, int) and reported_total > len(merged)
@@ -553,14 +581,14 @@ def _child_text(node, tag):
 
 def _fetch_sitemap_root(url):
     """下载并解析一个 sitemap，返回 ElementTree 根节点；失败抛 SitemapError。"""
-    blocked = ssrf_blocked(url)
+    blocked = url_policy_error(url)
     if blocked:
         raise SitemapError(f"目标被拦截: {blocked}")
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
     try:
-        with urllib.request.urlopen(req, context=_ssl_context(), timeout=SITEMAP_TIMEOUT) as resp:
+        with _open_sitemap(req) as resp:
             # 校验重定向后的最终 URL，防止 302 跳到内网/保留地址绕过 SSRF
-            blocked = ssrf_blocked(resp.geturl())
+            blocked = url_policy_error(resp.geturl())
             if blocked:
                 raise SitemapError(f"重定向目标被拦截: {blocked}")
             content = resp.read(MAX_SITEMAP_BYTES).decode("utf-8", errors="replace")
@@ -585,6 +613,9 @@ def parse_sitemap(sitemap_url, max_urls=50, recursive=False):
         or max_urls > 10000
     ):
         raise SitemapError("max_urls 必须是 1-10000 的整数")
+    url_error = url_policy_error(sitemap_url)
+    if url_error:
+        raise SitemapError(url_error)
 
     entries = []
     errors = []

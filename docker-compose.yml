@@ -8,6 +8,8 @@ services:
       - "50826:50826"
     environment:
       SEARXNG_INSTANCE: ${SEARXNG_INSTANCE:-https://searxng.hqgg.top:59826}
+      SMART3W_ALLOWED_HOSTS: ${SMART3W_ALLOWED_HOSTS:-}
+      SMART3W_RESPECT_ROBOTS: ${SMART3W_RESPECT_ROBOTS:-0}
       MCP_TRANSPORT: streamable-http
       MCP_PATH: /mcp
       SMART3W_HOST: 0.0.0.0

@@ -10,7 +10,6 @@ import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from urllib.parse import urlparse
 
 from mcp.server.fastmcp import FastMCP
 
@@ -30,7 +29,7 @@ from smart3w_fetch_utils import (
     apply_window,
     is_rate_limited,
 )
-from smart3w_url_utils import normalize_url, ssrf_blocked
+from smart3w_url_utils import normalize_url, ssrf_blocked, url_policy_error
 
 __version__ = "2.3.0"
 
@@ -40,7 +39,7 @@ SEARXNG_INSTANCE = os.environ.get("SEARXNG_INSTANCE", DEFAULT_INSTANCE)
 
 # 与 scripts/fetch.sh 的默认尝试次数保持一致（下方会显式传给 fetch.sh）
 FETCH_RETRY = 2
-_STRATEGY_COUNT = {"get": 1, "fetch": 1, "stealthy": 1, "smart": 4}
+_STRATEGY_COUNT = {"get": 2, "fetch": 1, "stealthy": 1, "smart": 4}
 
 
 def _env_int(name: str, default: int) -> int:
@@ -101,24 +100,7 @@ def _fetch_subprocess_timeout(timeout: int, mode: str) -> int:
 
 def _validate_http_url(url: str) -> str | None:
     """校验 URL：仅允许 http/https 且带主机名；非法时返回错误信息，否则返回 None。"""
-    if not isinstance(url, str):
-        return "URL 必须是字符串"
-    url = url.strip()
-    if not url or len(url) > 8192:
-        return "URL 不能为空且长度不能超过 8192"
-    if any(ord(ch) < 0x20 for ch in url):
-        return "URL 包含非法控制字符"
-    try:
-        parsed = urlparse(url)
-        # 访问 port 会触发校验，提前捕获非法端口
-        parsed.port
-    except ValueError as exc:
-        return f"URL 格式无效: {exc}"
-    if parsed.scheme not in ("http", "https") or not parsed.netloc:
-        return "仅支持 http/https URL"
-    if parsed.username or parsed.password:
-        return "URL 不允许包含用户名/密码"
-    return ssrf_blocked(url)
+    return url_policy_error(url)
 
 
 def _run_fetch(
@@ -164,7 +146,7 @@ def _run_fetch(
 
 
 def _read_effective_url(path: str) -> str | None:
-    """读取 curl 最终 URL 侧车文件（由 fetch.sh --effective-url 写入）；缺失或为空返回 None。"""
+    """读取抓取侧车文件中的最终 URL（由 fetch.sh --effective-url 写入）；缺失或为空返回 None。"""
     try:
         url = Path(path).read_text(encoding="utf-8", errors="replace").strip()
     except OSError:
@@ -385,8 +367,8 @@ def smart3w_fetch(
 
     Args:
         url: The webpage URL to fetch
-        mode: Fetch strategy — 'smart' (auto-degrade curl→scrapling→stealthy),
-              'get' (curl only, lightweight), 'fetch' (scrapling + Chrome),
+        mode: Fetch strategy — 'smart' (auto-degrade Python HTTP→curl→scrapling→stealthy),
+              'get' (Python HTTP, fallback curl), 'fetch' (scrapling + Chrome),
               'stealthy' (scrapling + Chrome + Cloudflare bypass)
         compress: Whether to extract readable content (True) or return raw HTML (False)
         timeout: Per-request timeout in seconds

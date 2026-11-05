@@ -21,15 +21,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 try:
     import httpx
-except ImportError:  # 由 fetch.sh 捕获并回退到 curl
-    print("httpx 未安装，无法使用 Python HTTP 抓取", file=sys.stderr)
-    sys.exit(3)
+except ImportError:  # 延迟到实际抓取时再提示，--check-policy 仍可用
+    httpx = None  # type: ignore[assignment]
 
-from smart3w_url_utils import env_flag, ssrf_blocked  # noqa: E402
+from smart3w_url_utils import env_flag, url_policy_error  # noqa: E402
 
 try:
     from smart3w_fetch_utils import RobotsChecker  # noqa: E402
-except Exception:  # pragma: no cover - 极端环境缺少依赖时只关闭 robots 检查
+except ImportError:  # pragma: no cover - 极端环境缺少依赖时只关闭 robots 检查
     RobotsChecker = None  # type: ignore[assignment]
 
 DEFAULT_USER_AGENT = (
@@ -49,6 +48,15 @@ PROXY_ENV_VARS = (
 
 class BlockedURLError(RuntimeError):
     """URL 被 allowlist、SSRF 或 robots 规则拒绝。"""
+
+
+class HTTPXUnavailable(RuntimeError):
+    """运行环境未安装 httpx；fetch.sh 会回退到 curl。"""
+
+
+def _url_policy_error(url: str) -> str | None:
+    """兼容内部调用名；实际校验逻辑统一在 smart3w_url_utils。"""
+    return url_policy_error(url)
 
 
 def _normalize_proxy_env() -> None:
@@ -110,9 +118,11 @@ def fetch_url(
 ) -> str:
     """抓取 URL，返回最终响应的 Content-Type；失败抛异常。"""
     # 先做首跳校验：既避免私网请求，也避免在代理配置异常时先触发 httpx 报错
-    blocked = ssrf_blocked(url)
+    blocked = _url_policy_error(url)
     if blocked:
         raise BlockedURLError(blocked)
+    if httpx is None:
+        raise HTTPXUnavailable("httpx 未安装，无法使用 Python HTTP 抓取")
     _normalize_proxy_env()
     timeout = max(1, int(timeout))
     max_redirects = max(0, int(max_redirects))
@@ -129,10 +139,11 @@ def fetch_url(
         follow_redirects=False,
         timeout=httpx.Timeout(timeout, connect=min(timeout, 10)),
         trust_env=True,
+        verify=env_flag("SMART3W_SSL_VERIFY", True),
         headers=headers,
     ) as client:
         for _ in range(max_redirects + 1):
-            blocked = ssrf_blocked(current)
+            blocked = _url_policy_error(current)
             if blocked:
                 raise BlockedURLError(blocked)
             if checker is not None and not checker.allows(current):
@@ -171,7 +182,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--effective-url", default=None)
     parser.add_argument("--respect-robots", action="store_true")
     parser.add_argument("--validate-only", action="store_true")
+    parser.add_argument("--check-policy", action="store_true")
     args = parser.parse_args(argv)
+
+    if args.check_policy:
+        error = _url_policy_error(args.url)
+        if error:
+            print(f"URL 被拒绝: {error}", file=sys.stderr)
+            return 2
+        return 0
 
     if not args.validate_only and not args.output:
         print("output 不能为空", file=sys.stderr)
@@ -195,14 +214,16 @@ def main(argv: list[str] | None = None) -> int:
     except BlockedURLError as exc:
         print(f"URL 被拒绝: {exc}", file=sys.stderr)
         return 2
-    except httpx.TimeoutException as exc:
-        print(f"抓取超时: {exc}", file=sys.stderr)
-        return 1
-    except httpx.HTTPError as exc:
-        print(f"HTTP 抓取失败: {exc}", file=sys.stderr)
-        return 1
+    except HTTPXUnavailable as exc:
+        print(str(exc), file=sys.stderr)
+        return 3
     except Exception as exc:
-        print(f"抓取失败: {exc}", file=sys.stderr)
+        if httpx is not None and isinstance(exc, httpx.TimeoutException):
+            print(f"抓取超时: {exc}", file=sys.stderr)
+        elif httpx is not None and isinstance(exc, httpx.HTTPError):
+            print(f"HTTP 抓取失败: {exc}", file=sys.stderr)
+        else:
+            print(f"抓取失败: {exc}", file=sys.stderr)
         return 1
 
 
