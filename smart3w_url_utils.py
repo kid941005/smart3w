@@ -200,6 +200,27 @@ def ssrf_blocked(url: str) -> str | None:
     return None
 
 
+def url_policy_error(url: str, max_length: int = 8192) -> str | None:
+    """统一 URL 形状 + 主机白名单 + SSRF 校验；MCP 与 HTTP 抓取器共用。"""
+    if not isinstance(url, str):
+        return "URL 必须是字符串"
+    raw = url.strip()
+    if not raw or len(raw) > max_length:
+        return f"URL 不能为空且长度不能超过 {max_length}"
+    if any(ord(ch) < 0x20 for ch in raw):
+        return "URL 包含非法控制字符"
+    try:
+        parsed = urllib.parse.urlsplit(raw)
+        _ = parsed.port  # 触发非法端口校验
+    except ValueError as exc:
+        return f"URL 格式无效: {exc}"
+    if parsed.scheme.lower() not in ("http", "https") or not parsed.netloc:
+        return "仅支持 http/https URL"
+    if parsed.username or parsed.password:
+        return "URL 不允许包含用户名/密码"
+    return ssrf_blocked(raw)
+
+
 def normalize_url(url: str) -> str:
     """URL 规范化：小写 scheme/host、去默认端口与 fragment、去追踪参数并排序 query。
 

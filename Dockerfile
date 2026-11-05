@@ -11,12 +11,13 @@ ENV PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
 LABEL org.opencontainers.image.title="Smart3W MCP Server"
-LABEL org.opencontainers.image.description="Web search & scraping via MCP (SearXNG + curl + Chrome)"
+LABEL org.opencontainers.image.description="Web search & scraping via MCP (SearXNG + Python HTTP/curl + Chrome)"
 LABEL org.opencontainers.image.licenses="MIT"
 LABEL org.opencontainers.image.source="https://github.com/kid941005/smart3w"
 
 # --------------------------------------------------------------------------
 # Install system dependencies: curl + Chrome for scrapling
+# Python HTTP 抓取器使用容器内 Python 的 httpx；curl 作为回退
 # --------------------------------------------------------------------------
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
@@ -43,11 +44,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 # --------------------------------------------------------------------------
 # Install smart3w（与 wheel 相同的打包路径，顺带验证 package-data 是否完整）
 # --------------------------------------------------------------------------
-COPY pyproject.toml README.md MANIFEST.in ./
+COPY pyproject.toml README.md MANIFEST.in LICENSE ./
 COPY scripts/ ./scripts/
 COPY mcp_server.py smart3w_core.py smart3w_fetch_utils.py smart3w_url_utils.py ./
 
-RUN chmod +x scripts/fetch.sh && pip install --no-cache-dir .
+RUN chmod +x scripts/fetch.sh && pip install --no-cache-dir --no-deps .
 
 # --------------------------------------------------------------------------
 # Runtime

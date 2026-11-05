@@ -53,7 +53,7 @@ pip install "mcp>=1.6,<2" "scrapling[all]>=0.4.2" "readability-lxml>=0.8.0" beau
 
 **浏览器依赖（`fetch` / `stealthy` 必需）**：
 
-- `get` 仅依赖 `curl`
+- `get` 默认使用 Python HTTP（`httpx`），失败时回退 `curl`
 - `fetch` / `stealthy` 默认依赖 `Google Chrome Stable`，并使用 `--real-chrome`
 - 启动时会自动探测常见安装路径（Linux / macOS / Windows），也可用 `SMART3W_CHROME` 显式指定
 - 探测顺序：`SMART3W_CHROME` → 常见安装路径 → `PATH` 中的 `google-chrome` / `chromium` / `chrome`
@@ -148,7 +148,7 @@ CLI 的 `search` 在 `success=false`（参数错误、无可用实例等）时�
 
 ### get - HTTP 抓取（轻量）
 
-**仅使用策略**：curl
+**策略**：Python HTTP（逐跳 SSRF/robots；失败回退 curl）
 
 ```bash
 ./scripts/fetch.sh get "https://example.com" ./output.md
@@ -201,7 +201,7 @@ CLI 的 `search` 在 `success=false`（参数错误、无可用实例等）时�
 ./scripts/fetch.sh doctor --check-search
 ```
 
-用于检查 `curl`、Python 解释器（`SMART3W_PYTHON`，默认 `python3`）、`scrapling`、Python 模块 `readability` / `bs4`，以及自动探测到的 Chrome 是否可用。
+用于检查 `curl`、Python 解释器（`SMART3W_PYTHON`，默认 `python3`）、`scrapling`、Python 模块 `httpx` / `readability` / `bs4`，以及自动探测到的 Chrome 是否可用。
 
 传入 `--check-search` 时，还会额外检查 `SEARXNG_INSTANCE` 的连通性；该检查会发起真实网络请求。
 
@@ -335,7 +335,7 @@ SEARXNG_INSTANCE="https://your-searxng.com" ./scripts/fetch.sh search "关键词
 > （`SMART3W_ALLOW_PRIVATE_IPS=1` 可关闭，仅限内网可信环境）；设置 `SMART3W_ALLOWED_HOSTS` 后还会限制可访问主机。
 > `SMART3W_SSL_VERIFY=0` 会关闭 TLS 证书校验（存在中间人风险），仅应在自建实例使用自签证书且无法更换证书时临时开启。
 >
-> 重定向 SSRF：`get` / `smart` 的 Python HTTP 路径已逐跳校验每个 redirect hop（SSRF + 可选 robots），
+> 重定向 SSRF：`get` / `smart` 的 Python HTTP 路径与 `smart3w_sitemap` 已逐跳校验每个 redirect hop（SSRF + 可选 robots），
 > 但 `fetch` / `stealthy` 的浏览器内部跳转仍只能校验最终 URL；高安全场景请叠加出站网络策略
 > （只允许公网出口、代理白名单或 egress firewall），不要仅依赖应用层校验。
 >
@@ -376,7 +376,7 @@ smart3w/
 ├── smart3w_fetch_utils.py  # 抓取治理：TTL 缓存 / robots / 限速
 ├── smart3w_url_utils.py    # 公共 URL 工具：规范化 / 追踪参数 / SSRF 检查
 ├── .github/workflows/      # CI（lint + 测试 + 打包）与 Docker 发布
-├── tests/                  # 单元测试（pytest，94 例）
+├── tests/                  # 单元测试（pytest，95 例）
 └── scripts/
     ├── fetch.sh            # 统一入口脚本（搜索 / 抓取 / Sitemap）
     ├── smart3w_http.py     # 轻量 HTTP 抓取：逐跳 SSRF/robots + Accept Markdown + 代理
@@ -399,7 +399,7 @@ CI 会在 Python 3.10 / 3.12 上运行 lint、单元测试，并校验 wheel 中
 
 架构上，MCP 的 `smart3w_search` / `smart3w_sitemap` 直接调用 `smart3w_core.py`，
 不再经过 `fetch.sh` 子进程；`smart3w_fetch` / `smart3w_crawl` 仍由 `fetch.sh` 执行
-curl/scrapling 策略降级，`smart3w_doctor` 仍需要 shell 环境检查。
+Python HTTP/curl/scrapling 策略降级，`smart3w_doctor` 仍需要 shell 环境检查。
 
 ---
 
@@ -408,6 +408,7 @@ curl/scrapling 策略降级，`smart3w_doctor` 仍需要 shell 环境检查。
 ### 2.3.0（开发中）
 
 - **抓取安全**：`get` / `smart` 默认改用 Python HTTP 抓取器，逐跳检查重定向的 SSRF 与 robots.txt；失败时回退 curl
+- **Sitemap 安全**：Sitemap 下载增加逐跳重定向校验，避免先请求内网再拦截
 - **主机白名单**：新增 `SMART3W_ALLOWED_HOSTS`，支持精确域名、IP 与 `*.example.com`
 - **内容协商**：请求优先发送 `Accept: text/markdown`，站点直接返回 Markdown 时跳过 HTML 压缩
 - **代理兼容**：Python 抓取器读取标准 `HTTP_PROXY/HTTPS_PROXY/ALL_PROXY`，并规范 `socks://` 为 `socks5://`
@@ -489,7 +490,7 @@ curl/scrapling 策略降级，`smart3w_doctor` 仍需要 shell 环境检查。
 ### 2.2.0 (2026-06-08)
 
 - **Docker + MCP 封装**：新增 `Dockerfile`、`mcp_server.py`、`requirements.txt`
-- **暴露 4 个 MCP 工具**：`smart3w_search`、`smart3w_fetch`、`smart3w_sitemap`、`smart3w_doctor`
+- **暴露 5 个 MCP 工具**：`smart3w_search`、`smart3w_fetch`、`smart3w_crawl`、`smart3w_sitemap`、`smart3w_doctor`
 - **Hermes 可直接调用**：通过 Streamable HTTP `/mcp` 端点暴露，配置 `mcp_servers.smart3w` 即可接入
 - 镜像推送至 `kid941005/smart3w-mcp` 和 `ghcr.io/kid941005/smart3w-mcp`
 

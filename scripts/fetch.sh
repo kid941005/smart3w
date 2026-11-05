@@ -104,6 +104,17 @@ _is_valid_file() {
     [[ -s "$1" ]] && [[ -r "$1" ]]
 }
 
+# 在进入任何抓取策略前做一次统一 URL 策略预检（allowlist / SSRF）。
+# 无 Python 或 helper 不可用时返回 0，交给具体策略报错；返回 2 表示明确拒绝。
+_policy_check_url() {
+    local url="$1"
+    local rc=0
+    command -v "$PYTHON_BIN" >/dev/null 2>&1 || return 0
+    "$PYTHON_BIN" "$SCRIPT_DIR/smart3w_http.py" --check-policy "$url" >/dev/null 2>&1 || rc=$?
+    [[ $rc -eq 2 ]] && return 2
+    return 0
+}
+
 # 有 timeout 命令时加上超时限制，没有时直接执行（提升 macOS 等环境兼容性）
 _run_with_timeout() {
     local seconds="$1"; shift
@@ -162,8 +173,11 @@ _fetch_by_curl() {
         --max-time "$TIMEOUT_CURL"
         --max-redirs 10
         -o "$output"
-        "$url"
     )
+    case "${SMART3W_SSL_VERIFY:-1}" in
+        0|false|no|off) curl_args+=("-k") ;;
+    esac
+    curl_args+=("$url")
 
     _info "策略1: curl 抓取..."
 
@@ -330,6 +344,7 @@ _doctor() {
     _doctor_check_cmd curl || failed=1
     _doctor_check_cmd "$PYTHON_BIN" || failed=1
     _doctor_check_cmd scrapling || failed=1
+    _doctor_check_python_module httpx || failed=1
     _doctor_check_python_module readability || failed=1
     _doctor_check_python_module bs4 || failed=1
 
@@ -518,6 +533,12 @@ do_fetch() {
         rm -f "$temp_raw"
         return 1
     }
+
+    _policy_check_url "$url"
+    if [[ $? -eq 2 ]]; then
+        _fail_fetch "$temp_raw" "$temp_compressed" "URL 被安全策略拒绝（allowlist/SSRF）"
+        return 1
+    fi
 
     _run_fetch_mode "$mode" "$url" "$temp_raw" method_used
     run_status=$?

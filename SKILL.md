@@ -152,7 +152,7 @@ license: MIT
 ./scripts/fetch.sh doctor --check-search
 ```
 
-用于检查 `curl`、Python 解释器（`SMART3W_PYTHON`，默认 `python3`）、`scrapling`、Python 模块 `readability` / `bs4`，以及自动探测到的 Chrome 是否可用。
+用于检查 `curl`、Python 解释器（`SMART3W_PYTHON`，默认 `python3`）、`scrapling`、Python 模块 `httpx` / `readability` / `bs4`，以及自动探测到的 Chrome 是否可用。
 
 传入 `--check-search` 时，还会额外检查 `SEARXNG_INSTANCE` 的连通性；该检查会发起真实网络请求。
 
@@ -208,7 +208,7 @@ license: MIT
 - **Token 节省**：默认压缩，重复请求可节省 50-80% token
 - **降级机制**：压缩失败时自动回退为原始 HTML，确保不丢失内容
 - SearXNG 搜索优先使用自建实例，隐私友好
-- SSRF 防护仅作用于 MCP 工具层（`smart3w_fetch` / `smart3w_crawl` / `smart3w_sitemap`）；
-  直接调用 `scripts/fetch.sh` 时由调用方自行保证目标可信
+- SSRF / allowlist 防护作用于 MCP 工具层与 `scripts/fetch.sh` 的抓取预检；
+  `fetch` / `stealthy` 的浏览器内部重定向仍需叠加出站网络策略
 - 大规模抓取考虑使用 Python Spider 框架
 - 尊重网站 robots.txt 和服务条款
