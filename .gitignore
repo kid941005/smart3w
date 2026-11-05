@@ -35,3 +35,12 @@ fetch_result.md
 
 # CodeGraph local index
 .codegraph/
+
+# Tool caches
+.ruff_cache/
+.dsh-project-memory/
+
+
+# understand-skill artifacts
+.ua/
+

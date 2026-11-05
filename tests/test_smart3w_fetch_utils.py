@@ -2,7 +2,9 @@
 
 import socket
 import sys
+import threading
 import time
+import urllib.request
 import urllib.robotparser
 from pathlib import Path
 
@@ -34,6 +36,10 @@ def test_normalize_url_keeps_non_default_port_and_path():
 
 def test_normalize_url_returns_raw_for_non_http():
     assert normalize_url("ftp://example.com/a") == "ftp://example.com/a"
+
+
+def test_normalize_url_keeps_invalid_port():
+    assert normalize_url("http://example.com:99999/a") == "http://example.com:99999/a"
 
 
 def test_ttl_cache_expiry(monkeypatch):
@@ -92,10 +98,35 @@ def test_rate_limiter_spaces_same_domain(monkeypatch):
     assert sleeps == [1.0]  # 不同域名不等待
 
 
+def test_rate_limiter_caps_domain_entries():
+    limiter = DomainRateLimiter(min_interval=0, max_entries=2)
+    for domain in ("a", "b", "c"):
+        limiter.wait(f"https://{domain}.example/")
+
+    assert len(limiter._last) == 2
+
+
 def test_is_rate_limited():
     assert is_rate_limited("HTTP 429 Too Many Requests")
     assert is_rate_limited("rate limit exceeded")
     assert not is_rate_limited("connection reset")
+
+
+def test_apply_window_handles_non_integer_offsets():
+    out = apply_window({"content": "abcdef"}, "x", "y")
+    assert out["content"] == "abcdef"
+    assert out["start_index"] == 0
+    assert out["max_length"] == 0
+
+
+def test_normalize_url_handles_non_string():
+    assert normalize_url(None) == ""
+    assert normalize_url(123) == ""
+
+
+def test_robots_ua_reads_env_at_instance_time(monkeypatch):
+    monkeypatch.setenv("SMART3W_ROBOTS_UA", "CustomBot/1.0")
+    assert RobotsChecker().user_agent == "CustomBot/1.0"
 
 
 def test_apply_window_slices_and_reports():
@@ -155,3 +186,74 @@ def test_ssrf_blocked_allow_private_ips_env(monkeypatch):
 
 def test_ssrf_blocked_missing_host():
     assert ssrf_blocked("http:///path") is not None
+
+
+def test_normalize_url_keeps_ipv6_brackets():
+    assert normalize_url("http://[::1]:8080/a") == "http://[::1]:8080/a"
+
+
+def test_normalize_url_strips_userinfo():
+    assert normalize_url("https://user:pass@example.com/a") == "https://example.com/a"
+
+
+def test_ssrf_blocks_ipv4_mapped_ipv6():
+    assert ssrf_blocked("http://[::ffff:127.0.0.1]/")
+    assert ssrf_blocked("http://[::ffff:7f00:1]/")
+    assert ssrf_blocked("http://[64:ff9b::7f00:1]/")
+
+
+def test_ttl_cache_zero_ttl_disables_cache():
+    cache = TTLCache(ttl=0)
+    cache.put("a", 1)
+    assert cache.get("a") is None
+
+
+def test_robots_uses_origin_with_port(monkeypatch):
+    checker = RobotsChecker(ttl=1000)
+    calls = []
+    monkeypatch.setattr(
+        checker, "_load", lambda scheme, origin: calls.append((scheme, origin)) or None
+    )
+    assert checker.allows("http://example.com:8080/x") is True
+    assert checker.allows("http://example.com/y") is True
+    assert calls == [("http", "example.com:8080"), ("http", "example.com")]
+
+
+def test_robots_handles_utf8_bom(monkeypatch):
+    class FakeResponse:
+        def read(self):
+            return b"\xef\xbb\xbfUser-agent: *\r\nDisallow: /private\r\n"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: FakeResponse())
+    checker = RobotsChecker(ttl=1000)
+    assert checker.allows("https://example.com/private/x") is False
+
+
+def test_robots_loader_does_not_block_other_origins(monkeypatch):
+    checker = RobotsChecker(ttl=1000)
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow_load(scheme, origin):
+        if origin == "slow.example":
+            started.set()
+            assert release.wait(2)
+        return None
+
+    monkeypatch.setattr(checker, "_load", slow_load)
+    worker = threading.Thread(target=checker.allows, args=("https://slow.example/a",))
+    worker.start()
+    assert started.wait(2)
+
+    start = time.monotonic()
+    assert checker.allows("https://fast.example/b") is True
+    assert time.monotonic() - start < 1
+
+    release.set()
+    worker.join(2)
