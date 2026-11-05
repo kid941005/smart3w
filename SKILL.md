@@ -1,7 +1,7 @@
 ---
 name: smart3w
-description: 智能网页抓取路由 + SearXNG 搜索。支持 4 种明确语义的抓取方式：get 仅用 curl，fetch 使用 scrapling extract fetch + --real-chrome，stealthy 使用 scrapling stealthy-fetch + --real-chrome，smart 按 curl → fetch → stealthy 自动降级。支持并发批量抓取、URL 去重缓存、robots.txt 检查与按域名限速；搜索支持多 SearXNG 实例故障转移与语言/时间/分类/安全搜索/引擎参数。默认输出尽量为 Markdown：普通网页提取正文并尽量保留图片为 Markdown 图片链接，微信文章按正文段落输出并保留插图。
-version: 2.2.9
+description: 智能网页抓取路由 + SearXNG 搜索。支持 4 种明确语义的抓取方式：get 使用 Python HTTP（逐跳 SSRF/robots，失败回退 curl），fetch 使用 scrapling extract fetch + --real-chrome，stealthy 使用 scrapling stealthy-fetch + --real-chrome，smart 按 Python HTTP → curl → fetch → stealthy 自动降级。支持并发批量抓取、URL 去重缓存、robots.txt 检查与按域名限速；搜索支持多 SearXNG 实例故障转移与语言/时间/分类/安全搜索/引擎参数。默认输出尽量为 Markdown：普通网页提取正文并尽量保留图片为 Markdown 图片链接，微信文章按正文段落输出并保留插图。
+version: 2.3.0
 license: MIT
 ---
 
@@ -15,10 +15,10 @@ license: MIT
 用户请求
     ├── 搜索模式：SearXNG 搜索 → 返回标题/URL/摘要
     └── 抓取模式：
-            get      → 仅 curl
+            get      → Python HTTP（逐跳 SSRF/robots，失败回退 curl）
             fetch    → 仅 scrapling extract fetch + --real-chrome
             stealthy → 仅 scrapling stealthy-fetch + --real-chrome
-            smart    → curl → scrapling extract fetch + --real-chrome → stealthy-fetch + --real-chrome
+            smart    → Python HTTP → curl → scrapling extract fetch + --real-chrome → stealthy-fetch + --real-chrome
 
 补充说明：
 - 抓取成功后默认执行正文提取
@@ -94,7 +94,7 @@ license: MIT
 | `smart3w_doctor` | 运行依赖与环境自检 |
 
 > `smart3w_search` / `smart3w_sitemap` 直接调用 `smart3w_core.py`，不再经过 `fetch.sh`；
-> `smart3w_fetch` / `smart3w_crawl` 仍由 `fetch.sh` 执行 curl/scrapling 策略降级。
+> `smart3w_fetch` / `smart3w_crawl` 仍由 `fetch.sh` 执行 Python HTTP/curl/scrapling 策略降级。
 
 ### 批量抓取
 
@@ -106,7 +106,7 @@ license: MIT
 ### 智能抓取（默认，推荐）
 
 ```bash
-# 自动按 curl → scrapling extract fetch + --real-chrome → stealthy-fetch + --real-chrome 降级
+# 自动按 Python HTTP → curl → scrapling extract fetch + --real-chrome → stealthy-fetch + --real-chrome 降级
 ./scripts/fetch.sh smart "https://example.com" ./output.md
 
 # 跳过压缩，获取原始 HTML
@@ -116,7 +116,7 @@ license: MIT
 ### 快速抓取
 
 ```bash
-# 仅使用 curl，最快最轻量
+# Python HTTP（逐跳 SSRF/robots，优先 Accept Markdown），失败回退 curl
 ./scripts/fetch.sh get "https://example.com" ./output.md
 
 # 获取原始 HTML（未压缩）
@@ -161,10 +161,10 @@ license: MIT
 | 场景 | 推荐方式 | 命令 |
 |------|----------|------|
 | 网页搜索 | SearXNG | `fetch.sh search "关键词"` |
-| 普通静态网页、博客 | curl | `fetch.sh get <URL>` |
+| 普通静态网页、博客 | Python HTTP（回退 curl） | `fetch.sh get <URL>` |
 | 需要更强页面处理能力 | scrapling extract fetch + --real-chrome | `fetch.sh fetch <URL>` |
 | Cloudflare 保护 | stealthy-fetch + --real-chrome | `fetch.sh stealthy <URL>` |
-| 不确定站点类型 | 自动降级（curl → fetch → stealthy） | `fetch.sh smart <URL>` |
+| 不确定站点类型 | 自动降级（Python HTTP → curl → fetch → stealthy） | `fetch.sh smart <URL>` |
 | 需要原始 HTML | 任意 + --no-compress | `fetch.sh get <URL> --no-compress` |
 
 ## CLI 参数
@@ -195,6 +195,8 @@ license: MIT
 | `SMART3W_ROBOTS_UA` | Smart3W UA | 检查 robots.txt 时使用的 User-Agent |
 | `SMART3W_MIN_INTERVAL` | `0.2` | 同一域名两次请求的最小间隔（秒） |
 | `SMART3W_ALLOW_PRIVATE_IPS` | `0` | 是否放行内网/保留地址（SSRF 防护；`1` 关闭拦截，仅限内网可信环境） |
+| `SMART3W_ALLOWED_HOSTS` | 空 | 可选主机白名单，逗号分隔；支持精确域名、IP 和 `*.example.com` |
+| `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` | 空 | Python HTTP 抓取器与 curl 读取的标准代理变量 |
 | `MCP_TRANSPORT` | `streamable-http` | MCP 传输方式（`stdio` / `streamable-http`） |
 | `MCP_PATH` | `/mcp` | Streamable HTTP 端点路径 |
 

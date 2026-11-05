@@ -2,7 +2,7 @@
 # =============================================================================
 # Smart3W - 智能网页搜索与抓取工具
 # =============================================================================
-# 策略优先级：curl → scrapling → scrapling-stealthy
+# 策略优先级：Python HTTP → curl → scrapling → scrapling-stealthy
 # 设计原则：最可靠的方案最先尝试，复杂方案留作最后手段
 # =============================================================================
 
@@ -28,6 +28,7 @@ TIMEOUT_SCRAPLING=10
 TIMEOUT_STEALTHY=20
 MAX_ATTEMPTS=2
 EFFECTIVE_URL_FILE=""
+FETCH_CONTENT_TYPE=""
 DASH_SEPARATOR=0
 
 # 解析参数
@@ -114,7 +115,36 @@ _run_with_timeout() {
 }
 
 # =============================================================================
-# 策略1: curl 抓取（最可靠，适用于 95% 网站）
+# 策略1a: Python HTTP 抓取（逐跳 SSRF/robots 校验 + Accept Markdown）
+# =============================================================================
+_fetch_by_python_http() {
+    local url="$1"
+    local output="$2"
+    local rc=0
+    local meta=""
+    local -a args=(
+        "$PYTHON_BIN" "$SCRIPT_DIR/smart3w_http.py" "$url" "$output"
+        --timeout "$TIMEOUT_CURL" --ua "$USER_AGENT" --max-redirs 10
+    )
+    [[ -n "$EFFECTIVE_URL_FILE" ]] && args+=(--effective-url "$EFFECTIVE_URL_FILE")
+    [[ "${SMART3W_RESPECT_ROBOTS:-0}" == "1" ]] && args+=(--respect-robots)
+
+    _info "策略1: Python HTTP 抓取..."
+    meta=$("${args[@]}") || rc=$?
+    if [[ $rc -eq 0 ]] && _is_valid_file "$output"; then
+        FETCH_CONTENT_TYPE="$meta"
+        local size
+        size=$(wc -c < "$output")
+        _ok "  Python HTTP 成功 (${size}B)"
+        return 0
+    fi
+    # 2 = 被 allowlist / SSRF / robots 拒绝，不能回退到 curl 绕过安全策略
+    [[ $rc -eq 2 ]] && return 2
+    return 1
+}
+
+# =============================================================================
+# 策略1b: curl 抓取（Python HTTP 不可用或失败时的兼容回退）
 # =============================================================================
 _fetch_by_curl() {
     local url="$1"
@@ -419,7 +449,14 @@ _run_fetch_mode() {
 
     case "$mode" in
         get)
-            _fetch_by_curl "$url" "$raw_file" && method_name="curl"
+            local py_rc=0
+            _fetch_by_python_http "$url" "$raw_file" || py_rc=$?
+            [[ $py_rc -eq 2 ]] && return 2
+            if [[ $py_rc -eq 0 ]]; then
+                method_name="python-http"
+            elif _fetch_by_curl "$url" "$raw_file"; then
+                method_name="curl"
+            fi
             ;;
         fetch)
             _fetch_by_scrapling "$url" "$raw_file" && method_name="scrapling-http"
@@ -428,7 +465,12 @@ _run_fetch_mode() {
             _fetch_by_stealthy "$url" "$raw_file" && method_name="scrapling-stealthy"
             ;;
         smart)
-            if _fetch_by_curl "$url" "$raw_file"; then
+            local py_rc=0
+            _fetch_by_python_http "$url" "$raw_file" || py_rc=$?
+            [[ $py_rc -eq 2 ]] && return 2
+            if [[ $py_rc -eq 0 ]]; then
+                method_name="python-http"
+            elif _fetch_by_curl "$url" "$raw_file"; then
                 method_name="curl"
             elif _fetch_by_scrapling "$url" "$raw_file"; then
                 method_name="scrapling-http"
@@ -458,6 +500,7 @@ do_fetch() {
     local dep_status=0
 
     _log "开始抓取[$mode]: $url"
+    FETCH_CONTENT_TYPE=""
 
     # 输出目录不存在时直接创建，避免 mv 失败后仍误报成功
     local output_dir
@@ -479,6 +522,11 @@ do_fetch() {
     _run_fetch_mode "$mode" "$url" "$temp_raw" method_used
     run_status=$?
 
+    if [[ $run_status -eq 2 ]]; then
+        _fail_fetch "$temp_raw" "$temp_compressed" "URL 被安全策略拒绝（allowlist/SSRF/robots）"
+        return 1
+    fi
+
     if [[ $run_status -ne 0 ]]; then
         case "$mode" in
             get) _fail_fetch "$temp_raw" "$temp_compressed" "get 模式抓取失败" ;;
@@ -488,6 +536,13 @@ do_fetch() {
             *) _fail_fetch "$temp_raw" "$temp_compressed" "未知抓取模式: $mode" ;;
         esac
         return 1
+    fi
+
+    # 站点通过内容协商直接返回 Markdown 时，不要再用 BeautifulSoup/Readability 压缩
+    if [[ $COMPRESS -eq 1 && "${FETCH_CONTENT_TYPE:-}" == text/markdown* ]]; then
+        _finalize_raw_output "$temp_raw" "$temp_compressed" "$output" "检测到 text/markdown，跳过 HTML 压缩" || return 1
+        echo "   方法: $method_used"
+        return 0
     fi
 
     # 内容压缩
@@ -672,10 +727,10 @@ case "$ACTION" in
         echo "  $0 search <关键词> [数量]        SearXNG 搜索"
         echo "         [--language zh-CN] [--time-range day|week|month|year]"
         echo "         [--categories general,news] [--safesearch 0|1|2] [--engines google,bing]"
-        echo "  $0 get <URL> [输出文件]          仅使用 curl 轻量 HTTP 抓取"
+        echo "  $0 get <URL> [输出文件]          轻量 HTTP（Python httpx，失败回退 curl）"
         echo "  $0 fetch <URL> [输出文件]        仅使用 scrapling HTTP/渲染型抓取"
         echo "  $0 stealthy <URL> [输出文件]    仅使用 scrapling stealthy 反爬抓取"
-        echo "  $0 smart <URL> [输出文件]       自动按 curl → scrapling HTTP → stealthy 降级"
+        echo "  $0 smart <URL> [输出文件]       自动按 Python HTTP → curl → scrapling HTTP → stealthy 降级"
         echo "  $0 sitemap <url> [最大条数] [--recursive]  Sitemap 解析（可选递归展开 Index）"
         echo "  $0 doctor [--check-search]       检查运行依赖与环境"
         echo "  $0 smoke                         最小抓取 smoke test"

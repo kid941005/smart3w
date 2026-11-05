@@ -49,6 +49,71 @@ PRIVATE_NETWORKS = (
 _TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
 _FALSE_VALUES = frozenset({"0", "false", "no", "off", ""})
 
+# 可选的主机白名单：逗号分隔，支持精确主机、IP 与 *.example.com。
+ALLOWED_HOSTS_ENV = "SMART3W_ALLOWED_HOSTS"
+
+
+def _normalize_allowed_host(entry: str) -> str | None:
+    """规范化一条白名单条目；非法条目返回 None（配置错误不应阻断全部抓取）。"""
+    value = (entry or "").strip().rstrip(".").lower()
+    if not value:
+        return None
+    wildcard = value.startswith("*.")
+    name = value[2:] if wildcard else value
+    if not name or any(ch in name for ch in "*/\\:@[]?#% ") or ".." in name:
+        return None
+    try:
+        return ipaddress.ip_address(name.strip("[]")).compressed
+    except ValueError:
+        pass
+    return f"*.{name}" if wildcard else name
+
+
+def get_allowed_hosts() -> tuple[str, ...]:
+    """读取 SMART3W_ALLOWED_HOSTS（每次调用读取，便于运行期修改）。"""
+    raw = os.environ.get(ALLOWED_HOSTS_ENV, "")
+    entries: list[str] = []
+    for part in raw.split(","):
+        normalized = _normalize_allowed_host(part)
+        if normalized and normalized not in entries:
+            entries.append(normalized)
+    return tuple(entries)
+
+
+def host_is_allowed(host: str, allowed_hosts: tuple[str, ...]) -> bool:
+    """判断 host 是否命中白名单；通配符只匹配子域名，不匹配裸域名。"""
+    value = (host or "").strip().strip("[]").rstrip(".").lower()
+    try:
+        value = ipaddress.ip_address(value).compressed
+    except ValueError:
+        pass
+    for entry in allowed_hosts:
+        if entry.startswith("*."):
+            if value.endswith(entry[1:]) and value != entry[2:]:
+                return True
+        elif value == entry:
+            return True
+    return False
+
+
+def allowed_hosts_error(url: str) -> str | None:
+    """检查 URL 是否在可选的 SMART3W_ALLOWED_HOSTS 白名单内。"""
+    allowed = get_allowed_hosts()
+    if not allowed:
+        return None
+    if not isinstance(url, str):
+        return "URL 格式无效"
+    try:
+        parsed = urllib.parse.urlsplit(url.strip())
+        host = (parsed.hostname or "").strip().strip("[]").rstrip(".")
+    except ValueError:
+        return "URL 格式无效"
+    if not host:
+        return "URL 缺少主机名"
+    if not host_is_allowed(host, allowed):
+        return f"目标主机不在 {ALLOWED_HOSTS_ENV} 白名单中: {host}"
+    return None
+
 
 def env_flag(name: str, default: bool = False) -> bool:
     """读取布尔型环境变量；未设置或值无法识别时返回 default。"""
@@ -98,9 +163,13 @@ def ssrf_blocked(url: str) -> str | None:
     """SSRF 检查：目标指向内网/保留地址时返回错误信息，否则返回 None。
 
     SMART3W_ALLOW_PRIVATE_IPS=1 可关闭（仅建议在内网可信环境使用）。
+    SMART3W_ALLOWED_HOSTS 非空时，还会先做主机白名单校验。
     注意：DNS 解析与实际连接之间仍存在 rebinding 窗口，生产环境应叠加
     出站网络策略（如只允许公网出口 / 代理白名单）。
     """
+    allow_error = allowed_hosts_error(url)
+    if allow_error:
+        return allow_error
     if env_flag("SMART3W_ALLOW_PRIVATE_IPS", False):
         return None
     raw = (url or "").strip()
