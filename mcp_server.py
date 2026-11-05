@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Smart3W MCP Server - 将 smart3w 搜索与网页抓取能力暴露为 MCP 工具"""
+"""Smart3W MCP Server - 将 smart3w 搜索与网页抓取能力暴露为 MCP 工具。"""
 
 import argparse
-import json
 import os
 import re
 import subprocess
+import sys
 import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -14,6 +14,14 @@ from urllib.parse import urlparse
 
 from mcp.server.fastmcp import FastMCP
 
+from smart3w_core import (
+    DEFAULT_INSTANCE,
+    FETCH_MODES,
+    SEARCH_TIME_RANGES,
+    SitemapError,
+    parse_sitemap,
+    search_web,
+)
 from smart3w_fetch_utils import (
     DEFAULT_RESPECT_ROBOTS,
     DomainRateLimiter,
@@ -21,18 +29,35 @@ from smart3w_fetch_utils import (
     TTLCache,
     apply_window,
     is_rate_limited,
-    normalize_url,
-    ssrf_blocked,
 )
+from smart3w_url_utils import normalize_url, ssrf_blocked
 
-SERVER_DIR = Path(__file__).parent.absolute()
+__version__ = "2.2.9"
+
+SERVER_DIR = Path(__file__).resolve().parent
 FETCH_SH = SERVER_DIR / "scripts" / "fetch.sh"
-SEARXNG_INSTANCE = os.environ.get("SEARXNG_INSTANCE", "https://searxng.hqgg.top:59826")
-DEFAULT_TIMEOUT = int(os.environ.get("SMART3W_TIMEOUT", "30"))
+SEARXNG_INSTANCE = os.environ.get("SEARXNG_INSTANCE", DEFAULT_INSTANCE)
 
-# 与 scripts/fetch.sh 的默认重试次数保持一致（下方会显式传给 fetch.sh）
+# 与 scripts/fetch.sh 的默认尝试次数保持一致（下方会显式传给 fetch.sh）
 FETCH_RETRY = 2
 _STRATEGY_COUNT = {"get": 1, "fetch": 1, "stealthy": 1, "smart": 3}
+
+
+def _env_int(name: str, default: int) -> int:
+    """读取整数环境变量；非法值回退默认值，避免 import 阶段崩溃。"""
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return default
+
+
+DEFAULT_TIMEOUT = max(1, _env_int("SMART3W_TIMEOUT", 30))
+DEFAULT_PORT = min(65535, max(1, _env_int("SMART3W_PORT", 50826)))
+DEFAULT_HOST = (os.environ.get("SMART3W_HOST") or "0.0.0.0").strip() or "0.0.0.0"
+MAX_CACHE_CONTENT_BYTES = 2_000_000
 
 # 抓取治理：URL 去重缓存 / robots / 按域名限速
 FETCH_CACHE = TTLCache()
@@ -42,30 +67,57 @@ RATE_LIMITER = DomainRateLimiter()
 
 mcp = FastMCP(
     "smart3w",
-    host="0.0.0.0",
-    port=int(os.environ.get("SMART3W_PORT", "50826")),
+    host=DEFAULT_HOST,
+    port=DEFAULT_PORT,
     streamable_http_path=os.getenv("MCP_PATH", "/mcp"),
 )
 
 
+class FetchError(RuntimeError):
+    """fetch.sh 执行失败；子类通过 error_code 区分具体原因。"""
+
+    error_code = "FETCH_FAILED"
+
+
+class FetchTimeoutError(FetchError):
+    error_code = "FETCH_TIMEOUT"
+
+
+class FetchUnavailableError(FetchError):
+    error_code = "FETCH_UNAVAILABLE"
+
+
+def _is_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
 def _fetch_subprocess_timeout(timeout: int, mode: str) -> int:
-    """计算 fetch.sh 子进程超时，覆盖每个策略的重试次数与 smart 降级链路总时长。"""
+    """计算 fetch.sh 子进程超时，覆盖每个策略的尝试次数与 smart 降级链路总时长。"""
     strategies = _STRATEGY_COUNT.get(mode, 1)
     # 每次尝试按 timeout 计（curl --max-time / scrapling timeout），另加建连与进程开销；
-    # 乘以重试次数与策略数后，再留固定余量。
+    # 乘以尝试次数与策略数后，再留固定余量。
     return (timeout + 15) * FETCH_RETRY * strategies + 15
 
 
 def _validate_http_url(url: str) -> str | None:
     """校验 URL：仅允许 http/https 且带主机名；非法时返回错误信息，否则返回 None。"""
+    if not isinstance(url, str):
+        return "URL 必须是字符串"
+    url = url.strip()
     if not url or len(url) > 8192:
         return "URL 不能为空且长度不能超过 8192"
+    if any(ord(ch) < 0x20 for ch in url):
+        return "URL 包含非法控制字符"
     try:
         parsed = urlparse(url)
+        # 访问 port 会触发校验，提前捕获非法端口
+        parsed.port
     except ValueError as exc:
         return f"URL 格式无效: {exc}"
     if parsed.scheme not in ("http", "https") or not parsed.netloc:
         return "仅支持 http/https URL"
+    if parsed.username or parsed.password:
+        return "URL 不允许包含用户名/密码"
     return ssrf_blocked(url)
 
 
@@ -75,23 +127,41 @@ def _run_fetch(args: list[str], timeout: int = DEFAULT_TIMEOUT) -> str:
     fetch.sh 约定：数据走 stdout，日志走 stderr，因此成功时只返回 stdout，
     失败时把 stderr（或 stdout）作为异常信息抛出，避免日志污染数据通道。
     """
-    env = {**os.environ, "SEARXNG_INSTANCE": SEARXNG_INSTANCE}
-    result = subprocess.run(
-        ["bash", str(FETCH_SH)] + args,
-        capture_output=True, text=True, timeout=timeout, env=env,
-    )
+    if not FETCH_SH.is_file():
+        raise FetchUnavailableError(f"找不到抓取脚本: {FETCH_SH}")
+    env = {
+        **os.environ,
+        "SEARXNG_INSTANCE": SEARXNG_INSTANCE,
+        # 让 fetch.sh 使用当前 Python 解释器，避免 Windows/venv 下找不到 python3
+        "SMART3W_PYTHON": sys.executable,
+        "PYTHONIOENCODING": "utf-8",
+    }
+    try:
+        result = subprocess.run(
+            ["bash", str(FETCH_SH), *args],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+            env=env,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise FetchTimeoutError(f"fetch.sh 执行超时（>{timeout}s）") from exc
+    except OSError as exc:
+        raise FetchUnavailableError(f"无法执行 fetch.sh（需要 bash）: {exc}") from exc
     if result.returncode != 0:
         detail = result.stderr.strip() or result.stdout.strip() or f"Exit code {result.returncode}"
-        raise RuntimeError(detail)
+        raise FetchError(detail)
     return result.stdout
 
 
 def _read_effective_url(path: str) -> str | None:
     """读取 curl 最终 URL 侧车文件（由 fetch.sh --effective-url 写入）；缺失或为空返回 None。"""
-    p = Path(path)
-    if not p.exists():
+    try:
+        url = Path(path).read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
         return None
-    url = p.read_text(encoding="utf-8", errors="replace").strip()
     return url or None
 
 
@@ -111,12 +181,15 @@ def _do_fetch_file(url: str, mode: str, compress: bool, timeout: int) -> dict:
             args.append("--no-compress")
 
         log = _run_fetch(args, _fetch_subprocess_timeout(timeout, mode))
-        content = Path(out_path).read_text(encoding="utf-8", errors="replace")
+        try:
+            content = Path(out_path).read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            raise FetchError(f"fetch.sh 未生成输出文件: {exc}") from exc
 
         method = None
-        m = re.search(r"方法:\s*([^\s|]+)", log)
-        if m:
-            method = m.group(1)
+        match = re.search(r"方法:\s*([^\s|]+)", log)
+        if match:
+            method = match.group(1)
 
         effective_url = _read_effective_url(effective_path)
         if effective_url:
@@ -158,16 +231,11 @@ def _run_fetch_file(
     use_cache: bool = True,
     respect_robots: bool | None = None,
 ) -> dict:
-    """抓取一个 URL：先查缓存、再检查 robots.txt、按域名限速，最后返回窗口切片结果。"""
+    """抓取一个 URL：检查 robots.txt、按域名限速、查缓存，最后返回窗口切片结果。"""
     if respect_robots is None:
         respect_robots = DEFAULT_RESPECT_ROBOTS
-    cache_key = f"{normalize_url(url)}|{mode}|{'c' if compress else 'r'}"
 
-    if use_cache:
-        cached = FETCH_CACHE.get(cache_key)
-        if cached is not None:
-            return apply_window({**cached, "url": url, "cached": True}, start_index, max_length)
-
+    # robots 检查必须先于缓存：否则 robots 关闭时写入的缓存会绕过后续的 robots 开启请求
     if respect_robots and not ROBOTS_CHECKER.allows(url):
         return {
             "success": False,
@@ -177,19 +245,26 @@ def _run_fetch_file(
             "error_code": "ROBOTS_BLOCKED",
         }
 
+    cache_key = (normalize_url(url), mode, compress)
+    if use_cache:
+        cached = FETCH_CACHE.get(cache_key)
+        if cached is not None:
+            return apply_window({**cached, "url": url, "cached": True}, start_index, max_length)
+
     RATE_LIMITER.wait(url)
     try:
         result = _do_fetch_file(url, mode, compress, timeout)
-    except RuntimeError as exc:
+    except FetchError as exc:
         return {
             "success": False,
             "url": url,
             "mode": mode,
             "error": str(exc),
-            "error_code": "FETCH_FAILED",
+            "error_code": exc.error_code,
         }
 
-    if result.get("success"):
+    # 单条目过大时不进缓存，避免 64 条大页面把内存撑爆
+    if result.get("success") and len(result.get("content", "")) <= MAX_CACHE_CONTENT_BYTES:
         FETCH_CACHE.put(cache_key, result)
     return apply_window(result, start_index, max_length)
 
@@ -197,8 +272,6 @@ def _run_fetch_file(
 # ---------------------------------------------------------------------------
 # MCP Tools
 # ---------------------------------------------------------------------------
-
-_SEARCH_TIME_RANGES = ("", "day", "week", "month", "year")
 
 
 @mcp.tool()
@@ -227,47 +300,53 @@ def smart3w_search(
                result_count, answers?, corrections?, suggestions?,
                infoboxes?, cached?, log}
     """
-    if not query or count < 1 or count > 100:
+    query = (query or "").strip() if isinstance(query, str) else ""
+    language = language.strip() if isinstance(language, str) else ""
+    categories = categories.strip() if isinstance(categories, str) else ""
+    engines = engines.strip() if isinstance(engines, str) else ""
+    if not query:
         return {
             "success": False, "query": query, "results": [], "result_count": 0,
-            "error": "query 不能为空，count 必须是 1-100 的整数",
+            "error": "query 不能为空", "error_code": "INVALID_ARGUMENT",
         }
-    if safesearch not in (0, 1, 2):
+    if not _is_int(count) or count < 1 or count > 100:
         return {
             "success": False, "query": query, "results": [], "result_count": 0,
-            "error": "safesearch 必须是 0/1/2",
+            "error": "count 必须是 1-100 的整数", "error_code": "INVALID_ARGUMENT",
         }
-    if time_range not in _SEARCH_TIME_RANGES:
+    if not _is_int(safesearch) or safesearch not in (0, 1, 2):
+        return {
+            "success": False, "query": query, "results": [], "result_count": 0,
+            "error": "safesearch 必须是 0/1/2", "error_code": "INVALID_ARGUMENT",
+        }
+    if time_range not in SEARCH_TIME_RANGES:
         return {
             "success": False, "query": query, "results": [], "result_count": 0,
             "error": "time_range 必须是 day/week/month/year 之一或留空",
+            "error_code": "INVALID_ARGUMENT",
         }
 
-    cache_key = (
-        f"search|{query}|{count}|{language}|{time_range}|"
-        f"{categories}|{safesearch}|{engines}"
-    )
+    cache_key = (query, count, language, time_range, categories, safesearch, engines)
     cached = SEARCH_CACHE.get(cache_key)
     if cached is not None:
         return {**cached, "cached": True}
 
-    args = [
-        "search", query, str(count),
-        "--language", language,
-        "--safesearch", str(safesearch),
-    ]
-    if time_range:
-        args += ["--time-range", time_range]
-    if categories:
-        args += ["--categories", categories]
-    if engines:
-        args += ["--engines", engines]
+    # 直接调用核心模块：不再经过 fetch.sh / 子进程，减少一次进程与 JSON 往返
     try:
-        data = json.loads(_run_fetch(args))
-    except (RuntimeError, json.JSONDecodeError) as exc:
+        data = search_web(
+            query, count, SEARXNG_INSTANCE,
+            language=language, time_range=time_range,
+            categories=categories, safesearch=safesearch, engines=engines,
+        )
+    except Exception as exc:
         return {
             "success": False, "query": query, "results": [], "result_count": 0,
-            "error": f"搜索失败: {exc}",
+            "error": f"搜索失败: {exc}", "error_code": "SEARCH_FAILED",
+        }
+    if not isinstance(data, dict):
+        return {
+            "success": False, "query": query, "results": [], "result_count": 0,
+            "error": "搜索服务返回了非对象 JSON",
         }
     if data.get("success"):
         SEARCH_CACHE.put(cache_key, data)
@@ -304,25 +383,30 @@ def smart3w_fetch(
         dict: {success, url, mode, method, content, total_length,
                chars_returned, truncated, cached, log}
     """
+    if not isinstance(url, str):
+        url = ""
+    url = url.strip()
     error = None
-    if mode not in ("smart", "get", "fetch", "stealthy"):
-        error = f"无效抓取模式: {mode}。可选: smart, get, fetch, stealthy"
-    elif timeout < 1 or timeout > 120:
+    if mode not in FETCH_MODES:
+        error = f"无效抓取模式: {mode}。可选: {', '.join(FETCH_MODES)}"
+    elif not _is_int(timeout) or timeout < 1 or timeout > 120:
         error = "timeout 必须是 1-120 的整数（秒）"
-    elif max_length < 0 or max_length > 200000:
+    elif not _is_int(max_length) or max_length < 0 or max_length > 200000:
         error = "max_length 必须是 0-200000 的整数（0 表示不截断）"
-    elif start_index < 0:
+    elif not _is_int(start_index) or start_index < 0:
         error = "start_index 必须是非负整数"
     else:
         error = _validate_http_url(url)
     if error:
-        return {"success": False, "url": url, "error": error}
+        return {
+            "success": False, "url": url, "mode": mode,
+            "error": error, "error_code": "INVALID_ARGUMENT",
+        }
 
-    result = _run_fetch_file(
+    return _run_fetch_file(
         url, mode, compress, timeout, max_length, start_index,
         use_cache=use_cache, respect_robots=respect_robots,
     )
-    return result
 
 
 @mcp.tool()
@@ -347,80 +431,123 @@ def smart3w_crawl(
         respect_robots: Whether to respect robots.txt (默认开启)
 
     Returns:
-        dict: {success, requested, unique, duplicates_skipped,
-               succeeded, failed, mode, results: [...]}
+        dict: {success, requested, unique, duplicates_skipped, invalid?,
+               invalid_count, succeeded, failed, mode, results: [...]}
+        success 为 True 表示至少一个 URL 抓取成功；全部失败时为 False 并附带 error。
     """
-    if not urls or len(urls) > 100:
+    if not isinstance(urls, (list, tuple)) or not urls or len(urls) > 100:
         return {"success": False, "error": "urls 必须是 1-100 个 URL"}
-    if mode not in ("smart", "get", "fetch", "stealthy"):
+    if mode not in FETCH_MODES:
         return {"success": False, "error": f"无效抓取模式: {mode}"}
-    if timeout < 1 or timeout > 120:
+    if not _is_int(timeout) or timeout < 1 or timeout > 120:
         return {"success": False, "error": "timeout 必须是 1-120 的整数（秒）"}
-    if max_length < 0 or max_length > 200000:
+    if not _is_int(max_length) or max_length < 0 or max_length > 200000:
         return {"success": False, "error": "max_length 必须是 0-200000 的整数"}
-    if concurrency < 1 or concurrency > 8:
+    if not _is_int(concurrency) or concurrency < 1 or concurrency > 8:
         return {"success": False, "error": "concurrency 必须是 1-8 的整数"}
 
+    invalid: list[str] = []
     unique: list[str] = []
     seen: set[str] = set()
-    for url in urls:
-        if _validate_http_url(url):
+    for raw_url in urls:
+        if not isinstance(raw_url, str) or _validate_http_url(raw_url):
+            invalid.append(raw_url if isinstance(raw_url, str) else repr(raw_url))
             continue
+        url = raw_url.strip()
         key = normalize_url(url)
         if key in seen:
             continue
         seen.add(key)
         unique.append(url)
 
+    valid_count = len(urls) - len(invalid)
+    base = {
+        "requested": len(urls),
+        "unique": len(unique),
+        "duplicates_skipped": max(0, valid_count - len(unique)),
+        "invalid_count": len(invalid),
+        "mode": mode,
+    }
+    if invalid:
+        base["invalid"] = invalid
+    if not unique:
+        return {
+            **base, "success": False, "succeeded": 0, "failed": 0, "results": [],
+            "error": "没有可抓取的合法 URL",
+        }
+
     def _crawl_one(url: str) -> dict:
-        result = {}
+        result: dict = {}
         for attempt in range(3):
-            result = _run_fetch_file(
-                url, mode, compress, timeout, max_length=0, start_index=0,
-                use_cache=True, respect_robots=respect_robots,
-            )
+            try:
+                result = _run_fetch_file(
+                    url, mode, compress, timeout, max_length=0, start_index=0,
+                    use_cache=True, respect_robots=respect_robots,
+                )
+            except Exception as exc:  # 单个 URL 的意外错误不应中断整批
+                result = {
+                    "success": False, "url": url, "mode": mode,
+                    "error": str(exc), "error_code": "INTERNAL_ERROR",
+                }
             if result.get("success") or not is_rate_limited(result.get("error", "")):
                 break
             time.sleep(1 + attempt)
         return result
 
-    results: list[dict] = []
+    results_by_index: dict[int, dict] = {}
     with ThreadPoolExecutor(max_workers=concurrency) as pool:
-        futures = [pool.submit(_crawl_one, u) for u in unique]
-        for fut in as_completed(futures):
-            results.append(fut.result())
+        future_map = {pool.submit(_crawl_one, url): idx for idx, url in enumerate(unique)}
+        for future in as_completed(future_map):
+            idx = future_map[future]
+            try:
+                results_by_index[idx] = future.result()
+            except Exception as exc:
+                results_by_index[idx] = {
+                    "success": False, "url": unique[idx], "mode": mode,
+                    "error": str(exc), "error_code": "INTERNAL_ERROR",
+                }
 
-    results = [apply_window(r, 0, max_length) for r in results]
-    succeeded = sum(1 for r in results if r.get("success"))
+    results = [
+        apply_window(results_by_index[idx], 0, max_length)
+        for idx in range(len(unique))
+    ]
+    succeeded = sum(1 for result in results if result.get("success"))
     out = {
-        "success": True,
-        "requested": len(urls),
-        "unique": len(unique),
-        "duplicates_skipped": len(urls) - len(unique),
+        **base,
+        "success": succeeded > 0,
         "succeeded": succeeded,
         "failed": len(results) - succeeded,
-        "mode": mode,
         "results": results,
     }
+    if succeeded == 0:
+        out["error"] = "所有 URL 抓取失败"
     return out
 
 
 @mcp.tool()
-def smart3w_sitemap(url: str, max_urls: int = 50) -> dict[str, object]:
+def smart3w_sitemap(url: str, max_urls: int = 50, recursive: bool = False) -> dict[str, object]:
     """Parse a sitemap (supports index and URL-set formats). Returns discovered URLs.
 
+    Args:
+        url: Sitemap URL
+        max_urls: 最多返回/展开的 URL 数（1-10000）
+        recursive: 是否递归展开 Sitemap Index（最多 2 层）
+
     Returns:
-        dict: {success, output} 或 {success: False, error}
+        dict: {success, output} 或 {success: False, error, error_code}
     """
-    if max_urls < 1 or max_urls > 10000:
+    if not _is_int(max_urls) or max_urls < 1 or max_urls > 10000:
         return {"success": False, "error": "max_urls 必须是 1-10000 的整数"}
+    url = url.strip() if isinstance(url, str) else ""
     url_error = _validate_http_url(url)
     if url_error:
-        return {"success": False, "error": url_error}
+        return {"success": False, "error": url_error, "error_code": "INVALID_ARGUMENT"}
     try:
-        output = _run_fetch(["sitemap", url, str(max_urls)])
-    except RuntimeError as exc:
-        return {"success": False, "error": str(exc)}
+        output = parse_sitemap(url, max_urls, recursive=recursive)
+    except SitemapError as exc:
+        return {"success": False, "error": str(exc), "error_code": "SITEMAP_FAILED"}
+    except Exception as exc:
+        return {"success": False, "error": f"解析失败: {exc}", "error_code": "SITEMAP_FAILED"}
     return {"success": True, "output": output.strip()}
 
 
@@ -436,8 +563,8 @@ def smart3w_doctor(check_search: bool = False) -> dict[str, object]:
         args.append("--check-search")
     try:
         output = _run_fetch(args)
-    except RuntimeError as exc:
-        return {"success": False, "error": str(exc)}
+    except FetchError as exc:
+        return {"success": False, "error": str(exc), "error_code": exc.error_code}
     return {"success": True, "output": output.strip()}
 
 
@@ -445,12 +572,18 @@ def smart3w_doctor(check_search: bool = False) -> dict[str, object]:
 # Entry point
 # ---------------------------------------------------------------------------
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
+
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(prog="smart3w-mcp", description="Smart3W MCP Server")
     parser.add_argument(
         "--transport",
         choices=["stdio", "streamable-http"],
         default=os.getenv("MCP_TRANSPORT", "streamable-http"),
     )
-    args = parser.parse_args()
+    parser.add_argument("--version", action="version", version=f"smart3w {__version__}")
+    args = parser.parse_args(argv)
     mcp.run(transport=args.transport)
+
+
+if __name__ == "__main__":
+    main()

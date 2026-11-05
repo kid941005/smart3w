@@ -2,7 +2,7 @@
 
 [![OpenClaw](https://img.shields.io/badge/OpenClaw-Compatible-green)](https://github.com/openclaw/openclaw)
 [![MIT](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-2.2.8-blue)](https://github.com/kid941005/smart3w/releases)
+[![Version](https://img.shields.io/badge/Version-2.2.9-blue)](https://github.com/kid941005/smart3w/releases)
 
 集 **SearXNG 网页搜索**、**Sitemap 解析** 与 **智能网页抓取** 于一体。
 
@@ -22,20 +22,28 @@
 | 📱 **微信专取** | 自动识别微信文章，精准提取正文 |
 | 📦 **内容压缩** | readability-lxml 提取正文，节省 50-80% token |
 | 🗺️ **Sitemap** | 支持 Index 和 URL Set 格式 |
-| 🛡️ **SSRF 防护** | 默认拦截内网/保留/特殊用途地址，防服务端请求伪造 |
+| 🛡️ **SSRF 防护** | MCP 工具层默认拦截内网/保留/特殊用途地址，防服务端请求伪造 |
 | ⚙️ **可定制** | 支持自定义 UA、超时、重试次数 |
 
 ---
 
 ## 安装
 
+要求 Python 3.10+。
+
 ```bash
 git clone https://github.com/kid941005/smart3w.git ~/.openclaw/skills/smart3w
+cd ~/.openclaw/skills/smart3w
 ```
 
-**依赖**：
+**依赖**（推荐使用项目声明的依赖，包含 MCP SDK）：
 ```bash
-pip install "scrapling[all]>=0.4.2" "readability-lxml>=0.8.0" beautifulsoup4
+pip install -e .
+```
+
+只安装运行依赖时：
+```bash
+pip install "mcp>=1.6,<2" "scrapling[all]>=0.4.2" "readability-lxml>=0.8.0" beautifulsoup4
 ```
 
 **压缩依赖检查**：
@@ -46,18 +54,24 @@ pip install "scrapling[all]>=0.4.2" "readability-lxml>=0.8.0" beautifulsoup4
 **浏览器依赖（`fetch` / `stealthy` 必需）**：
 
 - `get` 仅依赖 `curl`
-- `fetch` / `stealthy` 默认依赖 `Google Chrome Stable`
-- 当前实现默认使用 `--real-chrome`
-- 需要确保以下路径存在：`/opt/google/chrome/chrome`
+- `fetch` / `stealthy` 默认依赖 `Google Chrome Stable`，并使用 `--real-chrome`
+- 启动时会自动探测常见安装路径（Linux / macOS / Windows），也可用 `SMART3W_CHROME` 显式指定
+- 探测顺序：`SMART3W_CHROME` → 常见安装路径 → `PATH` 中的 `google-chrome` / `chromium` / `chrome`
 
 ```bash
-/opt/google/chrome/chrome --version
+# 自动探测 Chrome（doctor 会打印实际路径）
+./scripts/fetch.sh doctor
+
+# 也可显式指定路径后确认
+export SMART3W_CHROME="/path/to/chrome"
+"$SMART3W_CHROME" --version
 ```
 
 **说明**：
 - `scrapling[all]` 是当前推荐安装方式
 - 安装后可先运行 `./scripts/fetch.sh doctor` 做环境自检
 - 如需同时验证搜索连通性，可运行 `./scripts/fetch.sh doctor --check-search`（该命令会向 `SEARXNG_INSTANCE` 发起真实网络请求）
+- Windows 下需要可用的 `bash`（Git Bash / Cygwin / WSL），MCP 服务会把当前 Python 解释器通过 `SMART3W_PYTHON` 传给 `fetch.sh`
 - 在当前项目实现中，`fetch` = `scrapling extract fetch + --real-chrome`
 - `stealthy` = `scrapling extract stealthy-fetch + --real-chrome`
 - `smart` 会按 `curl → fetch → stealthy` 自动降级
@@ -88,6 +102,23 @@ pip install "scrapling[all]>=0.4.2" "readability-lxml>=0.8.0" beautifulsoup4
 ./scripts/fetch.sh get "https://example.com" ./output.md
 ```
 
+### 作为 MCP 服务运行
+
+```bash
+# stdio（适合本地 MCP 客户端）
+smart3w-mcp --transport stdio
+# Streamable HTTP（默认监听 0.0.0.0:50826，端点 /mcp）
+smart3w-mcp
+```
+
+| MCP 工具 | 说明 |
+|----------|------|
+| `smart3w_search` | SearXNG 搜索（多实例 fallback、结果去重、TTL 缓存） |
+| `smart3w_fetch` | 单 URL 抓取（smart/get/fetch/stealthy，缓存 + robots + 限速） |
+| `smart3w_crawl` | 批量抓取（并发、去重、非法 URL 报告、结果保持输入顺序） |
+| `smart3w_sitemap` | Sitemap / Sitemap Index 解析（可选 `recursive` 递归展开） |
+| `smart3w_doctor` | 运行依赖与环境自检 |
+
 ---
 
 ## 命令详解
@@ -108,6 +139,10 @@ pip install "scrapling[all]>=0.4.2" "readability-lxml>=0.8.0" beautifulsoup4
 - `--engines google,bing`：指定引擎
 
 多实例容灾：主 `SEARXNG_INSTANCE` 失败时，会自动按 `SEARXNG_INSTANCES`（逗号分隔）中的备用实例依次兜底。
+
+当请求的 `count` 超过单页结果数时，会自动请求 `pageno` 后续页（最多 10 页），直到够数或没有新增结果。
+
+CLI 的 `search` 在 `success=false`（参数错误、无可用实例等）时返回非零退出码，便于脚本判断。
 
 ---
 
@@ -166,7 +201,7 @@ pip install "scrapling[all]>=0.4.2" "readability-lxml>=0.8.0" beautifulsoup4
 ./scripts/fetch.sh doctor --check-search
 ```
 
-用于检查 `curl`、`python3`、`scrapling`、Python 模块 `readability`、Python 模块 `bs4`，以及 `/opt/google/chrome/chrome` 是否可用。
+用于检查 `curl`、Python 解释器（`SMART3W_PYTHON`，默认 `python3`）、`scrapling`、Python 模块 `readability` / `bs4`，以及自动探测到的 Chrome 是否可用。
 
 传入 `--check-search` 时，还会额外检查 `SEARXNG_INSTANCE` 的连通性；该检查会发起真实网络请求。
 
@@ -175,10 +210,11 @@ pip install "scrapling[all]>=0.4.2" "readability-lxml>=0.8.0" beautifulsoup4
 ### sitemap - Sitemap 解析
 
 ```bash
-./scripts/fetch.sh sitemap "https://example.com/sitemap.xml" [最大条数]
+./scripts/fetch.sh sitemap "https://example.com/sitemap.xml" [最大条数] [--recursive]
 ```
 
-支持 Sitemap Index 和 URL Set 两种格式。
+支持 Sitemap Index 和 URL Set 两种格式；加 `--recursive` 会递归展开 Sitemap Index
+（最多 2 层），MCP 工具对应参数为 `recursive=true`。
 
 ---
 
@@ -189,7 +225,7 @@ pip install "scrapling[all]>=0.4.2" "readability-lxml>=0.8.0" beautifulsoup4
 | `--no-compress` | 跳过压缩，获取原始 HTML | - |
 | `--ua 'UA'` | 自定义 User-Agent | Chrome |
 | `--timeout N` | 所有抓取模式的超时时间（秒，正整数；MCP 工具 `smart3w_fetch` 默认为 30） | 15 |
-| `--retry N` | 失败重试次数（正整数） | 2 |
+| `--retry N` | 每个策略的最大尝试次数（正整数；`--attempts` 为同义参数） | 2 |
 | `search <关键词> [数量]` | 搜索结果数量（正整数） | 10 |
 | `search --language <lang>` | 搜索语言，如 zh-CN / en-US（留空表示不指定） | zh-CN |
 | `search --time-range <范围>` | 时间范围：day/week/month/year | 不限 |
@@ -268,6 +304,9 @@ Smart3W 支持自动识别并优化提取微信公众号文章。
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
+| `SMART3W_HOST` | `0.0.0.0` | MCP HTTP 监听地址（仅 streamable-http 生效） |
+| `SMART3W_PYTHON` | 空（使用 `python3`） | `fetch.sh` 调用的 Python 解释器；MCP 服务会自动传入当前解释器 |
+| `SMART3W_CHROME` | 空（自动探测） | Chrome 可执行文件路径 |
 | `SEARXNG_INSTANCE` | `https://searxng.hqgg.top:59826` | SearXNG 地址（主实例） |
 | `SEARXNG_INSTANCES` | 空 | 备用 SearXNG 实例（逗号分隔），主实例失败时自动兜底 |
 | `SMART3W_SSL_VERIFY` | `1` | 是否校验 TLS 证书；自签证书实例可设为 `0`（不推荐） |
@@ -276,7 +315,8 @@ Smart3W 支持自动识别并优化提取微信公众号文章。
 | `SMART3W_CACHE_TTL` | `300` | 抓取结果缓存有效期（秒） |
 | `SMART3W_CACHE_SIZE` | `64` | 抓取结果缓存最大条目数（LRU 淘汰） |
 | `SMART3W_RESPECT_ROBOTS` | `0` | 单个 `smart3w_fetch` 是否默认遵守 robots.txt（`1` 开启；`smart3w_crawl` 默认开启） |
-| `SMART3W_ROBOTS_TTL` | `3600` | robots.txt 按域名缓存时间（秒） |
+| `SMART3W_ROBOTS_TTL` | `3600` | robots.txt 按 origin 缓存时间（秒） |
+| `SMART3W_ROBOTS_UA` | Smart3W UA | 检查 robots.txt 时使用的 User-Agent |
 | `SMART3W_MIN_INTERVAL` | `0.2` | 同一域名两次请求的最小间隔（秒） |
 | `SMART3W_ALLOW_PRIVATE_IPS` | `0` | 是否放行内网/保留地址（SSRF 防护；`1` 关闭拦截，仅限内网可信环境） |
 | `MCP_TRANSPORT` | `streamable-http` | MCP 传输方式（`stdio` / `streamable-http`） |
@@ -287,9 +327,15 @@ SEARXNG_INSTANCE="https://your-searxng.com" ./scripts/fetch.sh search "关键词
 ```
 
 > **安全说明**：MCP 服务默认监听 `0.0.0.0:50826` 且无内置鉴权，部署到公网时请务必放在带认证/限流的
-> 反向代理后面。默认开启 SSRF 防护：抓取目标解析到内网/保留地址时会被拦截（`SMART3W_ALLOW_PRIVATE_IPS=1`
-> 可关闭，仅限内网可信环境）。`SMART3W_SSL_VERIFY=0` 会关闭 TLS 证书校验（存在中间人风险），仅应在自建实例
+> 反向代理后面。MCP 工具层默认开启 SSRF 防护：抓取目标解析到内网/保留地址时会被拦截
+> （`SMART3W_ALLOW_PRIVATE_IPS=1` 可关闭，仅限内网可信环境）；直接调用 `scripts/fetch.sh` 时不做该检查，
+> 由调用方自行保证目标可信。`SMART3W_SSL_VERIFY=0` 会关闭 TLS 证书校验（存在中间人风险），仅应在自建实例
 > 使用自签证书且无法更换证书时临时开启。
+>
+> 重定向 SSRF：当前实现会校验最终 URL，但无法阻止“中间跳转到内网、再跳到公网”的链路。高安全场景请叠加
+> 出站网络策略（只允许公网出口、代理白名单或 egress firewall），不要仅依赖应用层校验。
+>
+> 环境变量中的非法数值会回退默认值，不会导致服务启动失败；但生产环境仍建议显式设置并纳入配置管理。
 
 ---
 
@@ -311,19 +357,22 @@ SEARXNG_INSTANCE="https://your-searxng.com" ./scripts/fetch.sh search "关键词
 
 ```
 smart3w/
-├── README.md         # 本文件
-├── SKILL.md          # OpenClaw Skill 元数据
-├── LICENSE           # MIT 许可证
-├── .gitignore        # Git 忽略文件
-├── Dockerfile        # Docker 镜像构建（MCP 服务）
-├── mcp_server.py     # MCP 服务入口（FastMCP + Streamable HTTP）
-├── smart3w_fetch_utils.py  # 抓取治理：TTL 缓存 / robots / 限速（URL 工具见下）
+├── README.md               # 本文件
+├── SKILL.md                # OpenClaw Skill 元数据
+├── LICENSE                 # MIT 许可证
+├── pyproject.toml          # 项目元数据 / 依赖 / 打包配置
+├── MANIFEST.in             # sdist 文件清单（含 scripts/）
+├── uv.lock                 # 依赖锁文件（钉死版本，防上游破坏性升级）
+├── requirements.txt        # Python 依赖（Docker 构建使用）
+├── requirements-dev.txt    # 开发依赖（测试 / lint）
+├── Dockerfile              # Docker 镜像构建（MCP 服务）
+├── docker-compose.yml      # Compose 部署示例
+├── mcp_server.py           # MCP 服务入口（FastMCP + Streamable HTTP）
+├── smart3w_core.py         # 搜索 / Sitemap / 正文渲染核心（MCP 与 CLI 共用）
+├── smart3w_fetch_utils.py  # 抓取治理：TTL 缓存 / robots / 限速
 ├── smart3w_url_utils.py    # 公共 URL 工具：规范化 / 追踪参数 / SSRF 检查
-├── pyproject.toml    # 项目元数据与依赖声明
-├── uv.lock           # 依赖锁文件（钉死版本，防上游破坏性升级）
-├── requirements.txt  # Python 依赖（Docker 构建使用）
-├── requirements-dev.txt  # 开发依赖（测试 / lint）
-├── tests/            # 单元测试（pytest）
+├── .github/workflows/      # CI（lint + 测试 + 打包）与 Docker 发布
+├── tests/                  # 单元测试（pytest，84 例）
 └── scripts/
     ├── fetch.sh            # 统一入口脚本（搜索 / 抓取 / Sitemap）
     └── smart3w_utils.py    # 共享 Python 逻辑（搜索 / Sitemap / 正文压缩）
@@ -331,7 +380,44 @@ smart3w/
 
 ---
 
+## 开发
+
+```bash
+uv sync --extra dev
+uv run pytest -q
+uv run ruff check .
+uv build
+```
+
+CI 会在 Python 3.10 / 3.12 上运行 lint、单元测试，并校验 wheel 中是否包含
+`scripts/fetch.sh` 与 `scripts/smart3w_utils.py`。
+
+架构上，MCP 的 `smart3w_search` / `smart3w_sitemap` 直接调用 `smart3w_core.py`，
+不再经过 `fetch.sh` 子进程；`smart3w_fetch` / `smart3w_crawl` 仍由 `fetch.sh` 执行
+curl/scrapling 策略降级，`smart3w_doctor` 仍需要 shell 环境检查。
+
+---
+
 ## 📝 更新日志
+
+### 2.2.9 (2026-11-05)
+
+- **安全（P0）**：修复 IPv4-mapped IPv6（`::ffff:127.0.0.1`）与 NAT64（`64:ff9b::/96`）地址绕过 SSRF 拦截；补齐 6to4 / Teredo / site-local 等特殊地址段
+- **修复（P1）**：Sitemap Index 的类型标签错位（子 sitemap 被误标为 `[index]`），并兼容无 namespace 的 sitemap
+- **修复（P1）**：正文压缩对 `<li><p>`、`<td><p>` 与嵌套列表重复输出；重写为递归渲染，嵌套列表正确缩进
+- **修复（P1）**：MCP 子进程超时 / 缺少 bash 时抛出未捕获异常；现在返回结构化 `FETCH_TIMEOUT` / `FETCH_UNAVAILABLE`
+- **修复（P1）**：批量抓取把非法 URL 计入“重复”，且结果顺序不稳定；新增 `invalid` / `invalid_count`，结果保持输入顺序
+- **修复（P1）**：curl 仅按输出文件非空判定成功，可能把半截内容当成成功；改为同时校验 curl 退出码
+- **修复（P1）**：输出目录不存在时 `mv` 失败仍返回成功；现在自动创建目录并在写入失败时返回非零
+- **修复（P1）**：Windows/venv 下硬编码 `python3` 导致压缩/搜索不可用；新增 `SMART3W_PYTHON`，MCP 自动传入当前解释器
+- **修复（P2）**：robots.txt 检查在持有锁时发起网络请求，慢站点会阻塞其他域名；改为锁外加载 + 失败短 TTL 缓存
+- **修复（P2）**：`normalize_url` 丢失 IPv6 方括号；`ssrf_blocked` 处理 zone id / 控制字符 / 非法端口
+- **架构（P1）**：新增 `smart3w_core.py`，MCP 的 `smart3w_search` / `smart3w_sitemap` 改为直接调用核心模块，去掉“MCP → bash → Python”双重子进程；`fetch.sh` 仅保留抓取策略
+- **功能（P1）**：Sitemap 支持 `--recursive` / `recursive=true` 递归展开 Index（最多 2 层）；搜索支持 `pageno` 自动翻页（最多 10 页）
+- **健壮性（P2）**：限速器域名表增加容量上限；robots UA 支持 `SMART3W_ROBOTS_UA` 覆盖；`--attempts` 作为 `--retry` 同义参数
+- **健壮性（P2）**：核心函数增加非字符串/非整数入参保护；修复混合类型 `engines` 排序崩溃；CLI `search` 失败返回非零退出码；Sitemap 子项失败改为跳过并提示；doctor 在解释器缺失时给出明确提示
+- **构建**：修复 buildx 同时设置 `push` 与 `load` 导致的 CI 失败；新增 CI（lint + 测试 + 打包校验）；wheel 现在包含 `scripts/`，新增 `smart3w-mcp` 入口
+- **文档**：补齐 MCP 工具表、开发流程、环境变量与安全边界说明
 
 ### 2.2.8 (2026-09-07)
 

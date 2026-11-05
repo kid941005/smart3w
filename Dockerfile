@@ -6,6 +6,10 @@
 
 FROM python:3.12-slim-bookworm
 
+ENV PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
 LABEL org.opencontainers.image.title="Smart3W MCP Server"
 LABEL org.opencontainers.image.description="Web search & scraping via MCP (SearXNG + curl + Chrome)"
 LABEL org.opencontainers.image.licenses="MIT"
@@ -23,7 +27,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Install Google Chrome Stable
 RUN curl -fsSL https://dl.google.com/linux/linux_signing_key.pub \
     | gpg --dearmor -o /usr/share/keyrings/google-chrome.gpg \
-    && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/google-chrome.gpg] https://dl.google.com/linux/chrome/deb/ stable main" \
     > /etc/apt/sources.list.d/google-chrome.list \
     && apt-get update && apt-get install -y --no-install-recommends \
     google-chrome-stable \
@@ -37,23 +41,25 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # --------------------------------------------------------------------------
-# Copy smart3w
+# Install smart3w（与 wheel 相同的打包路径，顺带验证 package-data 是否完整）
 # --------------------------------------------------------------------------
+COPY pyproject.toml README.md MANIFEST.in ./
 COPY scripts/ ./scripts/
-COPY mcp_server.py smart3w_fetch_utils.py smart3w_url_utils.py ./
+COPY mcp_server.py smart3w_core.py smart3w_fetch_utils.py smart3w_url_utils.py ./
 
-RUN chmod +x scripts/fetch.sh
+RUN chmod +x scripts/fetch.sh && pip install --no-cache-dir .
 
 # --------------------------------------------------------------------------
 # Runtime
 # --------------------------------------------------------------------------
 ENV SEARXNG_INSTANCE=https://searxng.hqgg.top:59826
+ENV SMART3W_HOST=0.0.0.0
 ENV SMART3W_PORT=50826
 ENV SMART3W_TIMEOUT=30
 
 EXPOSE 50826
 
-CMD ["python3", "mcp_server.py"]
+CMD ["smart3w-mcp"]
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
     CMD python3 -c "import socket,os; socket.create_connection(('127.0.0.1', int(os.environ.get('SMART3W_PORT','50826'))), 3).close()" || exit 1

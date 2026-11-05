@@ -3,12 +3,15 @@ services:
     image: kid941005/smart3w-mcp:latest
     container_name: smart3w-mcp
     restart: unless-stopped
+    init: true
     ports:
       - "50826:50826"
     environment:
       SEARXNG_INSTANCE: ${SEARXNG_INSTANCE:-https://searxng.hqgg.top:59826}
       MCP_TRANSPORT: streamable-http
       MCP_PATH: /mcp
+      SMART3W_HOST: 0.0.0.0
+      SMART3W_TIMEOUT: ${SMART3W_TIMEOUT:-30}
     healthcheck:
       test: ["CMD", "python3", "-c", "import socket,os; socket.create_connection(('127.0.0.1', int(os.environ.get('SMART3W_PORT','50826'))), 3).close()"]
       interval: 30s
