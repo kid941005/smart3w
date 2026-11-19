@@ -362,7 +362,11 @@ Smart3W 支持自动识别并优化提取微信公众号文章。
 |------|--------|------|
 | `SMART3W_HOST` | `0.0.0.0` | MCP HTTP 监听地址（仅 streamable-http 生效） |
 | `SMART3W_PYTHON` | 空（使用 `python3`） | `fetch.sh` 调用的 Python 解释器；MCP 服务会自动传入当前解释器 |
-| `SMART3W_CHROME` | 空（自动探测） | Chrome 可执行文件路径 |
+| `SMART3W_CHROME` | 空（自动探测） | `fetch` / `stealthy` 使用的 Chrome 可执行文件路径 |
+| `SMART3W_CHROME_PATH` | 空（自动探测） | `smart3w_interact` 使用的 Chrome 路径；未设置时自动探测 |
+| `SMART3W_PROFILE_DIR` | `~/.smart3w/profiles` | 浏览器登录态 profile 存放目录；容器部署建议挂载持久卷 |
+| `SMART3W_BROWSER_HEADLESS` | `1` | 浏览器是否无头运行（`1` / `0`） |
+| `SMART3W_BROWSER_NO_SANDBOX` | `0` | 是否给 Chrome 加 `--no-sandbox`；root 容器会自动启用 |
 | `SEARXNG_INSTANCE` | `https://searxng.example.com:59826` | SearXNG 地址（主实例） |
 | `SEARXNG_INSTANCES` | 空 | 备用 SearXNG 实例（逗号分隔），主实例失败时自动兜底 |
 | `SMART3W_SSL_VERIFY` | `1` | 是否校验 TLS 证书；自签证书实例可设为 `0`（不推荐） |
@@ -401,6 +405,22 @@ services:
       HTTPS_PROXY: http://host.docker.internal:7890
       ALL_PROXY: http://host.docker.internal:7890
       NO_PROXY: localhost,127.0.0.1,::1,searxng
+```
+
+浏览器交互 profile 持久化示例（登录态在容器重建后仍保留）：
+
+```yaml
+services:
+  smart3w-mcp:
+    shm_size: "1gb"
+    environment:
+      SMART3W_PROFILE_DIR: /data/profiles
+      SMART3W_CHROME_PATH: /opt/google/chrome/chrome
+    volumes:
+      - smart3w_profiles:/data/profiles
+
+volumes:
+  smart3w_profiles:
 ```
 
 > **安全说明**：MCP 服务默认监听 `0.0.0.0:50826` 且无内置鉴权，部署到公网时请务必放在带认证/限流的

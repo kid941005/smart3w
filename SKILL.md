@@ -205,7 +205,11 @@ license: MIT
 | `SEARXNG_INSTANCES` | 空 | 备用 SearXNG 实例（逗号分隔），主实例失败时自动兜底 |
 | `SMART3W_SSL_VERIFY` | `1` | 是否校验 TLS 证书；自签证书实例可设为 `0`（不推荐） |
 | `SMART3W_PYTHON` | 空（`python3`） | `fetch.sh` 调用的 Python 解释器；MCP 自动传入当前解释器 |
-| `SMART3W_CHROME` | 空（自动探测） | Chrome 可执行文件路径 |
+| `SMART3W_CHROME` | 空（自动探测） | `fetch` / `stealthy` 使用的 Chrome 可执行文件路径 |
+| `SMART3W_CHROME_PATH` | 空（自动探测） | `smart3w_interact` 使用的 Chrome 路径 |
+| `SMART3W_PROFILE_DIR` | `~/.smart3w/profiles` | 浏览器登录态 profile 存放目录 |
+| `SMART3W_BROWSER_HEADLESS` | `1` | 浏览器是否无头运行 |
+| `SMART3W_BROWSER_NO_SANDBOX` | `0` | 是否给 Chrome 加 `--no-sandbox`；root 容器自动启用 |
 | `SMART3W_HOST` | `0.0.0.0` | MCP HTTP 监听地址 |
 | `SMART3W_PORT` | `50826` | MCP HTTP 服务端口 |
 | `SMART3W_TIMEOUT` | `30` | MCP 层默认请求超时（秒） |
