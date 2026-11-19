@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -102,6 +103,12 @@ class FetchUnavailableError(FetchError):
     error_code = "FETCH_UNAVAILABLE"
 
 
+class FetchCancelledError(FetchError):
+    """后台任务取消导致抓取中止。"""
+
+    error_code = "FETCH_CANCELLED"
+
+
 def _is_int(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 
@@ -112,6 +119,52 @@ def _fetch_subprocess_timeout(timeout: int, mode: str) -> int:
     # 每次尝试按 timeout 计（curl --max-time / scrapling timeout），另加建连与进程开销；
     # 乘以尝试次数与策略数后，再留固定余量。
     return (timeout + 15) * FETCH_RETRY * strategies + 15
+
+
+def _terminate_process_tree(proc: subprocess.Popen) -> None:
+    """尽力终止 fetch.sh 及其子进程，避免取消后留下后台抓取。"""
+    if proc.poll() is not None:
+        return
+    if os.name == "nt":
+        try:
+            subprocess.run(
+                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                capture_output=True,
+                timeout=5,
+            )
+            return
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    else:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+        except (ProcessLookupError, PermissionError, OSError):
+            try:
+                proc.terminate()
+            except OSError:
+                pass
+    try:
+        proc.wait(timeout=2)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    if os.name == "nt":
+        try:
+            proc.kill()
+        except OSError:
+            pass
+    else:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            try:
+                proc.kill()
+            except OSError:
+                pass
+    try:
+        proc.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        pass
 
 
 def _validate_http_url(url: str) -> str | None:
@@ -161,14 +214,21 @@ def _run_fetch(
     args: list[str],
     timeout: int = DEFAULT_TIMEOUT,
     respect_robots: bool | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> str:
     """Run fetch.sh and return stdout.
 
     fetch.sh 约定：数据走 stdout，日志走 stderr，因此成功时只返回 stdout，
     失败时把 stderr（或 stdout）作为异常信息抛出，避免日志污染数据通道。
+
+    传入 cancel_event 时使用 Popen 轮询，可以在后台任务取消时立即终止
+    fetch.sh 及其子进程；不传时保持原来的 subprocess.run 行为。
     """
     if not FETCH_SH.is_file():
         raise FetchUnavailableError(f"找不到抓取脚本: {FETCH_SH}")
+    if cancel_event is not None and cancel_event.is_set():
+        raise FetchCancelledError("抓取已取消")
+
     env = {
         **os.environ,
         "SEARXNG_INSTANCE": SEARXNG_INSTANCE,
@@ -179,24 +239,83 @@ def _run_fetch(
     # 让 Python HTTP 抓取器在每个 redirect hop 上检查 robots.txt
     if respect_robots is not None:
         env["SMART3W_RESPECT_ROBOTS"] = "1" if respect_robots else "0"
+
+    command = [_resolve_bash(), str(FETCH_SH), *args]
+
+    if cancel_event is None:
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=timeout,
+                env=env,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise FetchTimeoutError(f"fetch.sh 执行超时（>{timeout}s）") from exc
+        except OSError as exc:
+            raise FetchUnavailableError(f"无法执行 fetch.sh（需要 bash）: {exc}") from exc
+        if result.returncode != 0:
+            detail = result.stderr.strip() or result.stdout.strip() or f"Exit code {result.returncode}"
+            raise FetchError(detail)
+        return result.stdout
+
+    popen_kwargs: dict[str, object] = {}
+    if os.name == "nt":
+        popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        popen_kwargs["start_new_session"] = True
     try:
-        result = subprocess.run(
-            [_resolve_bash(), str(FETCH_SH), *args],
-            capture_output=True,
+        proc = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=timeout,
             env=env,
+            **popen_kwargs,
         )
-    except subprocess.TimeoutExpired as exc:
-        raise FetchTimeoutError(f"fetch.sh 执行超时（>{timeout}s）") from exc
     except OSError as exc:
         raise FetchUnavailableError(f"无法执行 fetch.sh（需要 bash）: {exc}") from exc
-    if result.returncode != 0:
-        detail = result.stderr.strip() or result.stdout.strip() or f"Exit code {result.returncode}"
+
+    deadline = time.monotonic() + timeout
+    stdout = ""
+    stderr = ""
+    try:
+        while True:
+            if cancel_event.is_set():
+                _terminate_process_tree(proc)
+                try:
+                    stdout, stderr = proc.communicate(timeout=2)
+                except (subprocess.TimeoutExpired, OSError):
+                    pass
+                raise FetchCancelledError("抓取已取消")
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                _terminate_process_tree(proc)
+                try:
+                    stdout, stderr = proc.communicate(timeout=2)
+                except (subprocess.TimeoutExpired, OSError):
+                    pass
+                raise FetchTimeoutError(f"fetch.sh 执行超时（>{timeout}s）")
+
+            try:
+                stdout, stderr = proc.communicate(timeout=min(0.2, remaining))
+                break
+            except subprocess.TimeoutExpired:
+                continue
+    finally:
+        if proc.poll() is None:
+            _terminate_process_tree(proc)
+
+    if proc.returncode != 0:
+        detail = (stderr or "").strip() or (stdout or "").strip() or f"Exit code {proc.returncode}"
         raise FetchError(detail)
-    return result.stdout
+    return stdout or ""
 
 
 def _read_effective_url(path: str) -> str | None:
@@ -214,8 +333,11 @@ def _do_fetch_file(
     compress: bool,
     timeout: int,
     respect_robots: bool = False,
+    cancel_event: threading.Event | None = None,
 ) -> dict:
     """真正调用 fetch.sh 抓取一个 URL，返回包含完整正文的结构化结果。"""
+    if cancel_event is not None and cancel_event.is_set():
+        raise FetchCancelledError("抓取已取消")
     with tempfile.NamedTemporaryFile(mode="w+", suffix=".md", delete=False) as tmp:
         out_path = tmp.name
     effective_path = f"{out_path}.effective"
@@ -229,10 +351,13 @@ def _do_fetch_file(
         if not compress:
             args.append("--no-compress")
 
+        run_kwargs: dict[str, object] = {"respect_robots": respect_robots}
+        if cancel_event is not None:
+            run_kwargs["cancel_event"] = cancel_event
         log = _run_fetch(
             args,
             _fetch_subprocess_timeout(timeout, mode),
-            respect_robots=respect_robots,
+            **run_kwargs,
         )
         try:
             content = Path(out_path).read_text(encoding="utf-8", errors="replace")
@@ -320,8 +445,11 @@ def _run_fetch_file(
     max_age_seconds: int = -1,
     query: str = "",
     max_tokens: int = 0,
+    cancel_event: threading.Event | None = None,
 ) -> dict:
     """抓取一个 URL：检查 robots.txt、按域名限速、查缓存，最后返回窗口切片结果。"""
+    if cancel_event is not None and cancel_event.is_set():
+        raise FetchCancelledError("抓取已取消")
     if respect_robots is None:
         respect_robots = DEFAULT_RESPECT_ROBOTS
 
@@ -334,6 +462,9 @@ def _run_fetch_file(
             "error": "robots.txt 禁止抓取该 URL",
             "error_code": "ROBOTS_BLOCKED",
         }
+
+    if cancel_event is not None and cancel_event.is_set():
+        raise FetchCancelledError("抓取已取消")
 
     cache_key = (normalize_url(url), mode, compress)
     result = None
@@ -351,8 +482,16 @@ def _run_fetch_file(
 
     if result is None:
         RATE_LIMITER.wait(url)
+        if cancel_event is not None and cancel_event.is_set():
+            raise FetchCancelledError("抓取已取消")
         try:
-            result = _do_fetch_file(url, mode, compress, timeout, respect_robots=respect_robots)
+            result = _do_fetch_file(
+                url, mode, compress, timeout,
+                respect_robots=respect_robots,
+                cancel_event=cancel_event,
+            )
+        except FetchCancelledError:
+            raise
         except FetchError as exc:
             return {
                 "success": False,
@@ -434,6 +573,7 @@ def _new_job() -> dict:
         "status": "queued",
         "created_at": time.time(),
         "cancel_requested": False,
+        "cancel_event": threading.Event(),
     }
     with JOBS_LOCK:
         JOBS[job["job_id"]] = job
@@ -875,13 +1015,18 @@ def _crawl_site(
     job: dict | None = None,
 ) -> dict[str, object]:
     """从 seed_url 开始 BFS 递归抓取；每页先取原始 HTML 以发现链接，再压缩正文。"""
+    cancel_event = job.get("cancel_event") if job is not None else None
+
+    def _cancelled() -> bool:
+        return cancel_event is not None and cancel_event.is_set()
+
     queue: list[tuple[str, int]] = [(seed_url, 0)]
     queued: set[str] = {normalize_url(seed_url)}
     visited: set[str] = set()
     results: list[dict] = []
     invalid: list[str] = []
     while queue and len(results) < max_pages:
-        if job is not None and job.get("cancel_requested"):
+        if _cancelled():
             break
         url, depth = queue.pop(0)
         key = normalize_url(url)
@@ -891,10 +1036,16 @@ def _crawl_site(
         if _validate_http_url(url):
             invalid.append(url)
             continue
-        raw = _run_fetch_file(
-            url, mode, False, timeout, max_length=0, start_index=0,
-            use_cache=True, respect_robots=respect_robots,
-        )
+        try:
+            raw = _run_fetch_file(
+                url, mode, False, timeout, max_length=0, start_index=0,
+                use_cache=True, respect_robots=respect_robots,
+                cancel_event=cancel_event,
+            )
+        except FetchCancelledError:
+            break
+        if _cancelled():
+            break
         if not raw.get("success"):
             item = dict(raw)
             item["depth"] = depth
@@ -903,6 +1054,8 @@ def _crawl_site(
         html = raw.get("content", "")
         content = html
         if compress and not raw.get("format"):
+            if _cancelled():
+                break
             content = _compress_html_text(html) or html
         item = dict(raw)
         item["content"] = content
@@ -938,6 +1091,8 @@ def _crawl_site(
         "truncated": bool(queue),
         "results": results,
     }
+    if _cancelled():
+        out["cancelled"] = True
     if invalid:
         out["invalid"] = invalid
     if succeeded == 0:
@@ -1030,6 +1185,7 @@ def smart3w_crawl(
                 args=(
                     job, _crawl_site, seed, mode, compress, timeout, max_length,
                     respect_robots, depth, max_pages, same_domain, path_include, path_exclude,
+                    job,
                 ),
                 daemon=True,
                 name=f"smart3w-crawl-{job['job_id'][:8]}",
@@ -1274,6 +1430,9 @@ def smart3w_job(job_id: str = "", cancel: bool = False) -> dict[str, object]:
                     "error_code": "JOB_NOT_FOUND"}
         if cancel and job.get("status") in ("queued", "running"):
             job["cancel_requested"] = True
+            event = job.get("cancel_event")
+            if event is not None:
+                event.set()
         return {"success": True, **_job_view(job)}
 
 

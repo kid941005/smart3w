@@ -2,8 +2,11 @@
 
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -438,3 +441,57 @@ def test_crawl_run_async_creates_and_completes_job(monkeypatch):
         time.sleep(0.05)
     assert job["status"] == "completed"
     assert job["result"]["success"] is True
+
+
+def test_run_fetch_cancel_event_terminates_inflight_subprocess(monkeypatch, tmp_path):
+    script = tmp_path / "slow.sh"
+    script.write_text("#!/usr/bin/env bash\nsleep 30\n", encoding="utf-8")
+    monkeypatch.setattr(mcp_server, "FETCH_SH", script)
+    cancel_event = threading.Event()
+    timer = threading.Timer(0.2, cancel_event.set)
+    timer.start()
+    started = time.monotonic()
+    try:
+        with pytest.raises(mcp_server.FetchCancelledError):
+            mcp_server._run_fetch([], timeout=30, cancel_event=cancel_event)
+    finally:
+        timer.cancel()
+    assert time.monotonic() - started < 3
+
+
+def test_async_crawl_cancel_interrupts_inflight_fetch(monkeypatch):
+    fetch_started = threading.Event()
+    cancel_seen = threading.Event()
+
+    def slow_fetch(url, *args, **kwargs):
+        cancel_event = kwargs.get("cancel_event")
+        fetch_started.set()
+        for _ in range(100):
+            if cancel_event is not None and cancel_event.is_set():
+                cancel_seen.set()
+                raise mcp_server.FetchCancelledError("抓取已取消")
+            time.sleep(0.02)
+        return {"success": True, "content": "", "effective_url": url}
+
+    monkeypatch.setattr(mcp_server, "_validate_http_url", lambda url: None)
+    monkeypatch.setattr(mcp_server, "_run_fetch_file", slow_fetch)
+    submitted = mcp_server.smart3w_crawl(
+        seed_url="https://example.com/", max_depth=1, run_async=True
+    )
+    assert submitted["success"] is True
+    job_id = submitted["job_id"]
+    assert fetch_started.wait(2)
+
+    started = time.monotonic()
+    cancelled = mcp_server.smart3w_job(job_id, cancel=True)
+    assert cancelled["success"] is True
+
+    for _ in range(100):
+        job = mcp_server.smart3w_job(job_id)
+        if job["status"] in ("completed", "failed", "cancelled"):
+            break
+        time.sleep(0.02)
+
+    assert cancel_seen.is_set()
+    assert job["status"] == "cancelled"
+    assert time.monotonic() - started < 3
