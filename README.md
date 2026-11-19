@@ -417,8 +417,11 @@ services:
       SMART3W_PROFILE_DIR: /data/profiles
       SMART3W_CHROME_PATH: /opt/google/chrome/chrome
     volumes:
+      # 宿主机当前目录下的 smart3w_profiles/，与 docker-compose.yml 一致
       - ./smart3w_profiles:/data/profiles
 ```
+
+首次部署前建议先创建目录：`mkdir -p smart3w_profiles`。
 
 > **安全说明**：MCP 服务默认监听 `0.0.0.0:50826` 且无内置鉴权，部署到公网时请务必放在带认证/限流的
 > 反向代理后面。MCP 工具层默认开启 SSRF 防护：抓取目标解析到内网/保留地址时会被拦截
