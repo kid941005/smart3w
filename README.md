@@ -144,6 +144,8 @@ smart3w-mcp
 
 ### MCP 客户端配置
 
+> 下文的 `example.com` 只是占位符，请替换为你自己的部署域名。
+
 通用 MCP 客户端（Streamable HTTP）：
 
 ```json
@@ -367,7 +369,7 @@ Smart3W 支持自动识别并优化提取微信公众号文章。
 | `SMART3W_PROFILE_DIR` | `~/.smart3w/profiles` | 浏览器登录态 profile 存放目录；容器部署建议挂载持久卷 |
 | `SMART3W_BROWSER_HEADLESS` | `1` | 浏览器是否无头运行（`1` / `0`） |
 | `SMART3W_BROWSER_NO_SANDBOX` | `0` | 是否给 Chrome 加 `--no-sandbox`；root 容器会自动启用 |
-| `SEARXNG_INSTANCE` | `https://searxng.example.com:59826` | SearXNG 地址（主实例） |
+| `SEARXNG_INSTANCE` | `https://searxng.example.com:59826` | SearXNG 地址（主实例；示例域名为占位） |
 | `SEARXNG_INSTANCES` | 空 | 备用 SearXNG 实例（逗号分隔），主实例失败时自动兜底 |
 | `SMART3W_SSL_VERIFY` | `1` | 是否校验 TLS 证书；自签证书实例可设为 `0`（不推荐） |
 | `SMART3W_PORT` | `50826` | MCP HTTP 服务端口 |

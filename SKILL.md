@@ -201,7 +201,7 @@ license: MIT
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
-| `SEARXNG_INSTANCE` | `https://searxng.example.com:59826` | SearXNG 实例地址 |
+| `SEARXNG_INSTANCE` | `https://searxng.example.com:59826` | SearXNG 实例地址（示例域名为占位） |
 | `SEARXNG_INSTANCES` | 空 | 备用 SearXNG 实例（逗号分隔），主实例失败时自动兜底 |
 | `SMART3W_SSL_VERIFY` | `1` | 是否校验 TLS 证书；自签证书实例可设为 `0`（不推荐） |
 | `SMART3W_PYTHON` | 空（`python3`） | `fetch.sh` 调用的 Python 解释器；MCP 自动传入当前解释器 |
