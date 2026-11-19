@@ -134,7 +134,10 @@ _fetch_by_python_http() {
     local output="$2"
     local rc=0
     local meta=""
-    local -a args=(
+    # 注意：MSYS bash 下 `local -a args=(...)` 会吞掉 Windows 路径中的反斜杠，
+    # 必须先声明再赋值，否则 SMART3W_PYTHON 为绝对路径时会退化成 curl。
+    local -a args
+    args=(
         "$PYTHON_BIN" "$SCRIPT_DIR/smart3w_http.py" "$url" "$output"
         --timeout "$TIMEOUT_CURL" --ua "$USER_AGENT" --max-redirs 10
     )
@@ -352,6 +355,10 @@ _doctor() {
     _doctor_check_python_module httpx || failed=1
     _doctor_check_python_module readability || failed=1
     _doctor_check_python_module bs4 || failed=1
+    _doctor_check_python_module pypdf || failed=1
+    _doctor_check_python_module docx || failed=1
+    _doctor_check_python_module openpyxl || failed=1
+    _doctor_check_python_module pptx || failed=1
 
     local chrome
     if chrome=$(_find_chrome); then
@@ -401,6 +408,71 @@ _compress_wechat() {
     local output="$2"
 
     "$PYTHON_BIN" "$UTILS_PY" compress-wechat "$input" "$output"
+}
+
+# =============================================================================
+# 文档解析: PDF / DOCX / XLSX / PPTX
+# =============================================================================
+# 仅用轻量检查决定是否调用解析器，避免每个 HTML 页面都多起一个 Python 进程
+_maybe_document() {
+    local path="$1"
+    local url="$2"
+    local content_type="${3:-}"
+
+    case "${content_type%%;*}" in
+        application/pdf|application/vnd.openxmlformats-officedocument.*|application/msword|application/vnd.ms-excel|application/vnd.ms-powerpoint)
+            return 0
+            ;;
+    esac
+
+    local path_only="${url%%\?*}"
+    case "$path_only" in
+        *.pdf|*.PDF|*.docx|*.DOCX|*.xlsx|*.XLSX|*.pptx|*.PPTX|*.doc|*.DOC|*.xls|*.XLS|*.ppt|*.PPT)
+            return 0
+            ;;
+    esac
+
+    [[ -r "$path" ]] || return 1
+    if head -c 4 "$path" 2>/dev/null | grep -q '%PDF'; then
+        return 0
+    fi
+    if head -c 2 "$path" 2>/dev/null | grep -q 'PK'; then
+        return 0
+    fi
+    return 1
+}
+
+# 返回 0=已解析为文档，3=不是文档，1=文档解析失败
+_extract_document() {
+    local input="$1"
+    local output="$2"
+    local url="$3"
+    local content_type="${4:-}"
+
+    "$PYTHON_BIN" "$SCRIPT_DIR/document_extract.py" "$input" "$output" \
+        --content-type "$content_type" --url "$url"
+}
+
+# 内容输出收尾：文档解析成功
+_finalize_document_output() {
+    local raw_file="$1"
+    local document_file="$2"
+    local output="$3"
+
+    local raw_size document_size
+    raw_size=$(wc -c < "$raw_file")
+    document_size=$(wc -c < "$document_file")
+
+    if ! mv "$document_file" "$output"; then
+        _err "写入输出文件失败: $output"
+        rm -f "$raw_file" "$document_file"
+        return 1
+    fi
+    rm -f "$raw_file"
+    echo ""
+    _ok "文档解析完成 → $output"
+    echo "   原始: ${raw_size}B | Markdown: ${document_size}B"
+    return 0
 }
 
 # 内容输出收尾：压缩成功
@@ -562,6 +634,23 @@ do_fetch() {
             *) _fail_fetch "$temp_raw" "$temp_compressed" "未知抓取模式: $mode" ;;
         esac
         return 1
+    fi
+
+    # 文档解析：PDF/Office 直接转 Markdown，避免把二进制当 HTML 压缩
+    if _maybe_document "$temp_raw" "$url" "${FETCH_CONTENT_TYPE:-}"; then
+        local document_rc=0
+        _info "检测到文档，尝试解析为 Markdown..."
+        _extract_document "$temp_raw" "$temp_compressed" "$url" "${FETCH_CONTENT_TYPE:-}" || document_rc=$?
+        if [[ $document_rc -eq 0 ]]; then
+            _finalize_document_output "$temp_raw" "$temp_compressed" "$output" || return 1
+            echo "   方法: $method_used"
+            return 0
+        fi
+        if [[ $document_rc -ne 3 ]]; then
+            _fail_fetch "$temp_raw" "$temp_compressed" "文档解析失败"
+            return 1
+        fi
+        _warn "未能识别文档格式，按普通内容处理"
     fi
 
     # 站点通过内容协商直接返回 Markdown 时，不要再用 BeautifulSoup/Readability 压缩

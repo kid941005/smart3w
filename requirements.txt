@@ -53,6 +53,8 @@ curl-cffi==0.16.3
     # via scrapling
 decorator==5.3.1 ; python_full_version < '3.11'
     # via ipython
+et-xmlfile==2.0.0
+    # via openpyxl
 exceptiongroup==1.3.1 ; python_full_version < '3.11'
     # via
     #   anyio
@@ -94,6 +96,8 @@ jsonschema-specifications==2025.9.1
 lxml==6.1.3
     # via
     #   lxml-html-clean
+    #   python-docx
+    #   python-pptx
     #   readability-lxml
     #   scrapling
 lxml-html-clean==0.4.5
@@ -110,6 +114,8 @@ mcp==1.29.1
     #   smart3w
 msgspec==0.21.1
     # via scrapling
+openpyxl==3.1.5
+    # via smart3w
 orjson==3.12.0
     # via scrapling
 parso==0.8.7
@@ -118,6 +124,10 @@ patchright==1.61.2
     # via scrapling
 pexpect==4.9.0 ; sys_platform != 'emscripten' and sys_platform != 'win32'
     # via ipython
+pillow==12.3.0 ; python_full_version < '3.11'
+    # via python-pptx
+pillow==13.0.0 ; python_full_version >= '3.11'
+    # via python-pptx
 playwright==1.61.0
     # via scrapling
 prompt-toolkit==3.0.53
@@ -150,10 +160,16 @@ pygments==2.21.0
     #   ipython-pygments-lexers
 pyjwt==2.13.0
     # via mcp
+pypdf==7.1.1
+    # via smart3w
+python-docx==1.2.0
+    # via smart3w
 python-dotenv==1.2.3
     # via pydantic-settings
 python-multipart==0.0.32
     # via mcp
+python-pptx==1.0.2
+    # via smart3w
 pywin32==312 ; sys_platform == 'win32'
     # via mcp
 readability-lxml==0.8.4.1
@@ -204,6 +220,9 @@ typing-extensions==4.16.0
     #   pydantic-core
     #   pyee
     #   pyjwt
+    #   pypdf
+    #   python-docx
+    #   python-pptx
     #   referencing
     #   scrapling
     #   starlette
@@ -220,3 +239,5 @@ w3lib==2.4.1
     # via scrapling
 wcwidth==0.8.3
     # via prompt-toolkit
+xlsxwriter==3.3.1
+    # via python-pptx

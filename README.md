@@ -2,7 +2,7 @@
 
 [![OpenClaw](https://img.shields.io/badge/OpenClaw-Compatible-green)](https://github.com/openclaw/openclaw)
 [![MIT](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-2.3.2-blue)](https://github.com/kid941005/smart3w/releases)
+[![Version](https://img.shields.io/badge/Version-2.4.0-blue)](https://github.com/kid941005/smart3w/releases)
 
 集 **SearXNG 网页搜索**、**Sitemap 解析** 与 **智能网页抓取** 于一体。
 
@@ -14,6 +14,8 @@
 |------|------|
 | 🔍 **网页搜索** | SearXNG 驱动，隐私友好 |
 | 📄 **网页抓取** | 分层策略架构，稳定可靠 |
+| 📚 **文档解析** | PDF / Word / Excel / PowerPoint 自动转 Markdown |
+| 🧾 **搜索即读** | 可选直接读取前 N 条搜索结果的正文 |
 | 🚀 **批量抓取** | `smart3w_crawl` 并发抓取 + URL 去重 |
 | 🔁 **多实例容灾** | 搜索主实例失败自动切换备用 SearXNG 实例 |
 | 🧠 **去重缓存** | URL 规范化 + TTL 缓存，重复请求秒回 |
@@ -43,7 +45,8 @@ pip install -e .
 
 只安装运行依赖时：
 ```bash
-pip install "mcp>=1.6,<2" "scrapling[all]>=0.4.2" "readability-lxml>=0.8.0" beautifulsoup4
+pip install "mcp>=1.6,<2" "scrapling[all]>=0.4.2" "readability-lxml>=0.8.0" beautifulsoup4 \
+  "pypdf>=4.0.0" "python-docx>=1.1.0" "openpyxl>=3.1.0" "python-pptx>=0.6.23"
 ```
 
 **压缩依赖检查**：
@@ -118,6 +121,11 @@ smart3w-mcp
 | `smart3w_crawl` | 批量抓取（并发、去重、非法 URL 报告、结果保持输入顺序） |
 | `smart3w_sitemap` | Sitemap / Sitemap Index 解析（可选 `recursive` 递归展开） |
 | `smart3w_doctor` | 运行依赖与环境自检 |
+
+**关键参数**
+
+- `smart3w_search` 新增 `read_top`（0-5，默认 0）与 `content_max_chars`（0-200000，默认 5000）。设置 `read_top>0` 时会直接抓取前 N 条结果正文，返回每条 `content` / `content_truncated` / `content_total_length` / `effective_url` / `read_error` / `read_error_code`，并在顶层返回 `read_top` / `read_succeeded` / `read_failed`。
+- `smart3w_fetch` 会按 Content-Type、URL 扩展名和文件头自动识别 PDF / DOCX / XLSX / PPTX，并解析为 Markdown；成功结果增加 `format` / `pages` / `sheets` / `slides` / `paragraphs` / `tables` / `chars` / `document`。旧版 `.doc/.xls/.ppt` 会明确报错，扫描版 PDF 会提示需要 OCR。
 
 ### MCP 客户端配置
 
@@ -425,12 +433,14 @@ smart3w/
 ├── docker-compose.yml      # Compose 部署示例
 ├── mcp_server.py           # MCP 服务入口（FastMCP + Streamable HTTP）
 ├── smart3w_core.py         # 搜索 / Sitemap / 正文渲染核心（MCP 与 CLI 共用）
+├── smart3w_document.py     # PDF / DOCX / XLSX / PPTX → Markdown
 ├── smart3w_fetch_utils.py  # 抓取治理：TTL 缓存 / robots / 限速
 ├── smart3w_url_utils.py    # 公共 URL 工具：规范化 / 追踪参数 / SSRF 检查
 ├── .github/workflows/      # CI（lint + 测试 + 打包）与 Docker 发布
-├── tests/                  # 单元测试（pytest，100 例）
+├── tests/                  # 单元测试（pytest，114 例）
 └── scripts/
     ├── fetch.sh            # 统一入口脚本（搜索 / 抓取 / Sitemap）
+    ├── document_extract.py # 文档解析 CLI（PDF / Office → Markdown）
     ├── smart3w_http.py     # 轻量 HTTP 抓取：逐跳 SSRF/robots + Accept Markdown + 代理
     └── smart3w_utils.py    # 共享 Python 逻辑（搜索 / Sitemap / 正文压缩）
 ```
@@ -457,7 +467,14 @@ Python HTTP/curl/scrapling 策略降级，`smart3w_doctor` 仍需要 shell 环�
 
 ## 📝 更新日志
 
-### 2.3.2（开发中）
+### 2.4.0（开发中）
+
+- **搜索读正文**：`smart3w_search` 新增 `read_top`（0-5）与 `content_max_chars`（0-200000），可直接读取前 N 条搜索结果正文，返回 `content` / `content_truncated` / `content_total_length` / `effective_url` / `read_error` / `read_error_code`，顶层 `read_top` / `read_succeeded` / `read_failed`，避免 Agent 多次往返抓取；基础搜索结果缓存仍只存无正文版本
+- **文档解析**：`smart3w_fetch` 自动识别并解析 PDF / DOCX / XLSX / PPTX 为 Markdown，返回 `format` / `pages` / `sheets` / `slides` / `paragraphs` / `tables` / `chars` / `document`；旧版 `.doc/.xls/.ppt` 明确报错，扫描件提示需要 OCR
+- **Windows 兼容**：MCP 调用 bash 时显式解析 Git/MSYS2 bash，避免命中 System32 WSL；修复 MSYS bash 数组吞 Windows 路径反斜杠
+- **依赖/自检**：新增 pypdf、python-docx、openpyxl、python-pptx 依赖；doctor 增加文档解析模块检查
+
+### 2.3.2
 
 - **代理出口**：新增 `SMART3W_PROXY_URL`，Python HTTP、curl、scrapling 统一使用显式代理
 - **代理侧 DNS**：新增 `SMART3W_TRUST_PROXY_DNS=1`，在配置可信代理时跳过主机名本地 DNS 检查；直接 IP 与 localhost 仍拦截

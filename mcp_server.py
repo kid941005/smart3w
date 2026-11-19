@@ -2,8 +2,10 @@
 """Smart3W MCP Server - 将 smart3w 搜索与网页抓取能力暴露为 MCP 工具。"""
 
 import argparse
+import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -31,7 +33,7 @@ from smart3w_fetch_utils import (
 )
 from smart3w_url_utils import normalize_url, ssrf_blocked, url_policy_error
 
-__version__ = "2.3.2"
+__version__ = "2.4.0"
 
 SERVER_DIR = Path(__file__).resolve().parent
 FETCH_SH = SERVER_DIR / "scripts" / "fetch.sh"
@@ -103,6 +105,44 @@ def _validate_http_url(url: str) -> str | None:
     return url_policy_error(url)
 
 
+def _resolve_bash() -> str:
+    """定位可用的 bash：优先 SMART3W_BASH，其次非 WSL 的 bash。
+
+    Windows 的 CreateProcess 可能先命中 C:\\Windows\\System32\\bash.exe（WSL），
+    导致 fetch.sh 报 WSL 未安装；这里显式跳过并回退到 Git Bash/MSYS2。
+    """
+    override = (os.environ.get("SMART3W_BASH") or "").strip()
+    if override:
+        if Path(override).is_file():
+            return override
+        raise FetchUnavailableError(f"SMART3W_BASH 指向的 bash 不存在: {override}")
+
+    candidates: list[str] = []
+    found = shutil.which("bash")
+    if found:
+        candidates.append(found)
+    if os.name == "nt":
+        for path in (
+            r"C:\Program Files\Git\bin\bash.exe",
+            r"C:\Program Files\Git\usr\bin\bash.exe",
+            r"C:\Program Files (x86)\Git\bin\bash.exe",
+            os.path.expandvars(r"%LOCALAPPDATA%\Programs\Git\bin\bash.exe"),
+            r"C:\msys64\usr\bin\bash.exe",
+        ):
+            candidates.append(path)
+
+    for candidate in candidates:
+        if not candidate or not Path(candidate).is_file():
+            continue
+        if candidate.lower().replace("/", "\\").endswith("\\windows\\system32\\bash.exe"):
+            continue
+        return candidate
+
+    raise FetchUnavailableError(
+        "找不到可用的 bash；请安装 Git Bash/MSYS2，或用 SMART3W_BASH 指定 bash 路径"
+    )
+
+
 def _run_fetch(
     args: list[str],
     timeout: int = DEFAULT_TIMEOUT,
@@ -127,7 +167,7 @@ def _run_fetch(
         env["SMART3W_RESPECT_ROBOTS"] = "1" if respect_robots else "0"
     try:
         result = subprocess.run(
-            ["bash", str(FETCH_SH), *args],
+            [_resolve_bash(), str(FETCH_SH), *args],
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -214,6 +254,18 @@ def _do_fetch_file(
         }
         if effective_url:
             result["effective_url"] = effective_url
+        document_match = re.search(r"^__SMART3W_DOCUMENT__\s+(\{.*\})\s*$", log, re.MULTILINE)
+        if document_match:
+            try:
+                document_meta = json.loads(document_match.group(1))
+            except json.JSONDecodeError:
+                document_meta = None
+            if isinstance(document_meta, dict):
+                result["format"] = document_meta.get("kind")
+                for key in ("pages", "sheets", "slides", "paragraphs", "tables", "chars"):
+                    if key in document_meta:
+                        result[key] = document_meta[key]
+                result["document"] = document_meta
         return result
     finally:
         Path(out_path).unlink(missing_ok=True)
@@ -273,6 +325,62 @@ def _run_fetch_file(
 # ---------------------------------------------------------------------------
 
 
+def _attach_search_content(
+    data: dict,
+    read_top: int,
+    content_max_chars: int,
+) -> dict:
+    """给搜索结果前 read_top 条补充正文；单条抓取失败不影响整体搜索。"""
+    results = data.get("results") or []
+    enriched: list[dict] = []
+    succeeded = 0
+    failed = 0
+    for index, item in enumerate(results):
+        row = dict(item) if isinstance(item, dict) else {"title": "", "url": "", "snippet": ""}
+        if index >= read_top:
+            enriched.append(row)
+            continue
+        url = row.get("url")
+        if not isinstance(url, str) or _validate_http_url(url):
+            row.update({
+                "content": "",
+                "content_truncated": False,
+                "read_error": "搜索结果 URL 非法或不在 allowlist",
+                "read_error_code": "INVALID_ARGUMENT",
+            })
+            failed += 1
+            enriched.append(row)
+            continue
+        fetched = _run_fetch_file(
+            url, "get", True, 20, content_max_chars, 0,
+            use_cache=True, respect_robots=None,
+        )
+        if fetched.get("success"):
+            row.update({
+                "content": fetched.get("content", ""),
+                "content_truncated": bool(fetched.get("truncated")),
+                "content_total_length": fetched.get("total_length", 0),
+            })
+            if fetched.get("effective_url"):
+                row["effective_url"] = fetched["effective_url"]
+            succeeded += 1
+        else:
+            row.update({
+                "content": "",
+                "content_truncated": False,
+                "read_error": fetched.get("error") or "正文抓取失败",
+                "read_error_code": fetched.get("error_code", "FETCH_FAILED"),
+            })
+            failed += 1
+        enriched.append(row)
+    out = dict(data)
+    out["results"] = enriched
+    out["read_top"] = read_top
+    out["read_succeeded"] = succeeded
+    out["read_failed"] = failed
+    return out
+
+
 @mcp.tool()
 def smart3w_search(
     query: str,
@@ -282,6 +390,8 @@ def smart3w_search(
     categories: str = "",
     safesearch: int = 0,
     engines: str = "",
+    read_top: int = 0,
+    content_max_chars: int = 5000,
 ) -> dict[str, object]:
     """Search the web via SearXNG (多实例 fallback + 结果去重 + TTL 缓存).
 
@@ -293,11 +403,13 @@ def smart3w_search(
         categories: 搜索分类，逗号分隔，如 general,news,images（空表示默认）
         safesearch: 安全搜索 0=关闭 1=中等 2=严格
         engines: 指定引擎，逗号分隔，如 google,bing（空表示 SearXNG 默认）
+        read_top: 是否顺带读取前 N 条结果正文（0-5；0 表示不读，默认 0）
+        content_max_chars: 每条正文最大字符数（0 表示不截断，默认 5000）
 
     Returns:
         dict: {success, query, engine, instance, params, results,
-               result_count, answers?, corrections?, suggestions?,
-               infoboxes?, cached?, log}
+               result_count, read_top?, read_succeeded?, read_failed?,
+               answers?, corrections?, suggestions?, infoboxes?, cached?, log}
     """
     query = (query or "").strip() if isinstance(query, str) else ""
     language = language.strip() if isinstance(language, str) else ""
@@ -324,11 +436,23 @@ def smart3w_search(
             "error": "time_range 必须是 day/week/month/year 之一或留空",
             "error_code": "INVALID_ARGUMENT",
         }
+    if not _is_int(read_top) or read_top < 0 or read_top > 5:
+        return {
+            "success": False, "query": query, "results": [], "result_count": 0,
+            "error": "read_top 必须是 0-5 的整数", "error_code": "INVALID_ARGUMENT",
+        }
+    if not _is_int(content_max_chars) or content_max_chars < 0 or content_max_chars > 200000:
+        return {
+            "success": False, "query": query, "results": [], "result_count": 0,
+            "error": "content_max_chars 必须是 0-200000 的整数（0 表示不截断）",
+            "error_code": "INVALID_ARGUMENT",
+        }
 
     cache_key = (query, count, language, time_range, categories, safesearch, engines)
     cached = SEARCH_CACHE.get(cache_key)
     if cached is not None:
-        return {**cached, "cached": True}
+        data = {**cached, "cached": True}
+        return _attach_search_content(data, read_top, content_max_chars) if read_top else data
 
     # 直接调用核心模块：不再经过 fetch.sh / 子进程，减少一次进程与 JSON 往返
     try:
@@ -349,7 +473,7 @@ def smart3w_search(
         }
     if data.get("success"):
         SEARCH_CACHE.put(cache_key, data)
-    return data
+    return _attach_search_content(data, read_top, content_max_chars) if read_top else data
 
 
 @mcp.tool()
@@ -380,7 +504,8 @@ def smart3w_fetch(
 
     Returns:
         dict: {success, url, mode, method, content, total_length,
-               chars_returned, truncated, cached, log}
+               chars_returned, truncated, cached, log,
+               format?, pages?/sheets?/slides?, document?}
     """
     if not isinstance(url, str):
         url = ""

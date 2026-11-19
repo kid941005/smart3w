@@ -215,3 +215,88 @@ def test_crawl_preserves_input_order(monkeypatch):
         "https://example.com/slow",
         "https://example.com/fast",
     ]
+
+def test_search_read_top_attaches_content(monkeypatch):
+    payload = {
+        "success": True,
+        "query": "q",
+        "results": [
+            {"title": "one", "url": "https://example.com/one", "snippet": "s1"},
+            {"title": "two", "url": "https://example.com/two", "snippet": "s2"},
+        ],
+        "result_count": 2,
+    }
+    monkeypatch.setattr(mcp_server, "search_web", lambda *args, **kwargs: payload)
+    calls = []
+
+    def fake_fetch(url, *args, **kwargs):
+        calls.append((url, args, kwargs))
+        return {
+            "success": True,
+            "content": "正文",
+            "truncated": False,
+            "total_length": 2,
+            "effective_url": url,
+        }
+
+    monkeypatch.setattr(mcp_server, "_run_fetch_file", fake_fetch)
+    result = mcp_server.smart3w_search("q", read_top=1, content_max_chars=50)
+
+    assert result["results"][0]["content"] == "正文"
+    assert result["results"][0]["content_truncated"] is False
+    assert "content" not in result["results"][1]
+    assert result["read_top"] == 1
+    assert result["read_succeeded"] == 1
+    assert result["read_failed"] == 0
+    assert calls and calls[0][0] == "https://example.com/one"
+
+
+def test_search_read_top_records_fetch_failure(monkeypatch):
+    payload = {
+        "success": True,
+        "query": "q",
+        "results": [{"title": "one", "url": "https://example.com/one", "snippet": "s"}],
+        "result_count": 1,
+    }
+    monkeypatch.setattr(mcp_server, "search_web", lambda *args, **kwargs: payload)
+    monkeypatch.setattr(
+        mcp_server,
+        "_run_fetch_file",
+        lambda *args, **kwargs: {"success": False, "error": "boom", "error_code": "FETCH_FAILED"},
+    )
+    result = mcp_server.smart3w_search("q", read_top=1)
+
+    assert result["results"][0]["content"] == ""
+    assert result["results"][0]["read_error"] == "boom"
+    assert result["read_failed"] == 1
+
+
+def test_search_rejects_invalid_read_top():
+    result = mcp_server.smart3w_search("q", read_top=6)
+    assert result["success"] is False
+    assert "read_top" in result["error"]
+
+
+def test_do_fetch_file_parses_document_marker(monkeypatch):
+    def fake_run_fetch(args, timeout=mcp_server.DEFAULT_TIMEOUT, respect_robots=None):
+        Path(args[2]).write_text("Hello PDF", encoding="utf-8")
+        return (
+            '__SMART3W_DOCUMENT__ {"kind": "pdf", "pages": 1, "chars": 9}\n'
+            "   方法: curl\n"
+        )
+
+    monkeypatch.setattr(mcp_server, "_run_fetch", fake_run_fetch)
+    result = mcp_server._do_fetch_file("http://example.com/sample.pdf", "get", True, 30)
+
+    assert result["success"] is True
+    assert result["format"] == "pdf"
+    assert result["pages"] == 1
+    assert result["chars"] == 9
+    assert result["document"]["kind"] == "pdf"
+
+
+def test_resolve_bash_prefers_override(monkeypatch, tmp_path):
+    fake = tmp_path / "bash.exe"
+    fake.write_text("", encoding="utf-8")
+    monkeypatch.setenv("SMART3W_BASH", str(fake))
+    assert mcp_server._resolve_bash() == str(fake)
