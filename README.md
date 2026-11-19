@@ -417,10 +417,7 @@ services:
       SMART3W_PROFILE_DIR: /data/profiles
       SMART3W_CHROME_PATH: /opt/google/chrome/chrome
     volumes:
-      - smart3w_profiles:/data/profiles
-
-volumes:
-  smart3w_profiles:
+      - ./smart3w_profiles:/data/profiles
 ```
 
 > **安全说明**：MCP 服务默认监听 `0.0.0.0:50826` 且无内置鉴权，部署到公网时请务必放在带认证/限流的

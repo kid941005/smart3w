@@ -33,6 +33,9 @@ Thumbs.db
 smoke_output.md
 fetch_result.md
 
+# Browser interaction profiles (may contain login cookies)
+smart3w_profiles/
+
 # CodeGraph local index
 .codegraph/
 

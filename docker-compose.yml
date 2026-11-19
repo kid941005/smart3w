@@ -35,14 +35,11 @@ services:
       # 1=关闭 Chrome 沙箱；普通部署保持 0（root 容器会自动启用）
       SMART3W_BROWSER_NO_SANDBOX: ${SMART3W_BROWSER_NO_SANDBOX:-0}
     volumes:
-      # 把 /data/profiles 存到 Docker 卷，删容器/重建后登录状态还在
-      - smart3w_profiles:/data/profiles
+      # 登录状态保存到当前目录下的 smart3w_profiles/，删容器/重建后仍在
+      - ./smart3w_profiles:/data/profiles
     healthcheck:
       test: ["CMD", "python3", "-c", "import socket,os; socket.create_connection(('127.0.0.1', int(os.environ.get('SMART3W_PORT','50826'))), 3).close()"]
       interval: 30s
       timeout: 5s
       start_period: 15s
       retries: 3
-
-volumes:
-  smart3w_profiles:
