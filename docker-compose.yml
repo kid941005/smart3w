@@ -6,7 +6,7 @@ services:
     init: true
     ports:
       - "50826:50826"
-    # Chrome 在容器内需要足够的 /dev/shm，避免页面崩溃
+    # Chrome 需要较大的共享内存，默认 64MB 容易崩，这里给 1GB
     shm_size: "1gb"
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -24,13 +24,18 @@ services:
       MCP_PATH: /mcp
       SMART3W_HOST: 0.0.0.0
       SMART3W_TIMEOUT: ${SMART3W_TIMEOUT:-30}
-      # 浏览器交互：profile 登录态持久化 + Chrome 路径
+      # smart3w_interact 保存登录 Cookie / localStorage 的目录（容器内路径）
       SMART3W_PROFILE_DIR: ${SMART3W_PROFILE_DIR:-/data/profiles}
+      # fetch / stealthy 使用的 Chrome 路径
       SMART3W_CHROME: ${SMART3W_CHROME:-/opt/google/chrome/chrome}
+      # smart3w_interact 使用的 Chrome 路径（和上面是两个不同的环境变量名）
       SMART3W_CHROME_PATH: ${SMART3W_CHROME_PATH:-/opt/google/chrome/chrome}
+      # 1=后台无界面运行；0=显示浏览器窗口。容器部署一般用 1
       SMART3W_BROWSER_HEADLESS: ${SMART3W_BROWSER_HEADLESS:-1}
+      # 1=关闭 Chrome 沙箱；普通部署保持 0（root 容器会自动启用）
       SMART3W_BROWSER_NO_SANDBOX: ${SMART3W_BROWSER_NO_SANDBOX:-0}
     volumes:
+      # 把 /data/profiles 存到 Docker 卷，删容器/重建后登录状态还在
       - smart3w_profiles:/data/profiles
     healthcheck:
       test: ["CMD", "python3", "-c", "import socket,os; socket.create_connection(('127.0.0.1', int(os.environ.get('SMART3W_PORT','50826'))), 3).close()"]
