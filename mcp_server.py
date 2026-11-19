@@ -18,6 +18,7 @@ from urllib.parse import urlsplit
 
 from mcp.server.fastmcp import FastMCP
 
+from smart3w_content import filter_content
 from smart3w_core import (
     DEFAULT_INSTANCE,
     FETCH_MODES,
@@ -38,7 +39,7 @@ from smart3w_fetch_utils import (
 )
 from smart3w_url_utils import normalize_url, ssrf_blocked, url_policy_error
 
-__version__ = "2.5.0"
+__version__ = "2.6.0"
 
 SERVER_DIR = Path(__file__).resolve().parent
 FETCH_SH = SERVER_DIR / "scripts" / "fetch.sh"
@@ -277,6 +278,28 @@ def _do_fetch_file(
         Path(effective_path).unlink(missing_ok=True)
 
 
+def _finalize_fetch_result(
+    result: dict,
+    query: str,
+    max_tokens: int,
+    start_index: int,
+    max_length: int,
+) -> dict:
+    """按查询词筛选正文（可选），再按窗口参数切片。"""
+    out = dict(result)
+    content = out.get("content", "") or ""
+    effective_limit = max_length
+    if max_tokens > 0 and max_length == 0:
+        # 粗估 4 字符 ≈ 1 token；只用于上下文控制，不保证与具体模型分词一致
+        effective_limit = max_tokens * 4
+    if query and out.get("success"):
+        filtered, stats = filter_content(content, query, max_chars=effective_limit)
+        out["content"] = filtered
+        out["original_length"] = len(content)
+        out["filter"] = {"query": query, **stats}
+    return apply_window(out, start_index, effective_limit if effective_limit else max_length)
+
+
 def _run_fetch_file(
     url: str,
     mode: str,
@@ -286,6 +309,9 @@ def _run_fetch_file(
     start_index: int,
     use_cache: bool = True,
     respect_robots: bool | None = None,
+    max_age_seconds: int = -1,
+    query: str = "",
+    max_tokens: int = 0,
 ) -> dict:
     """抓取一个 URL：检查 robots.txt、按域名限速、查缓存，最后返回窗口切片结果。"""
     if respect_robots is None:
@@ -302,27 +328,37 @@ def _run_fetch_file(
         }
 
     cache_key = (normalize_url(url), mode, compress)
-    if use_cache:
-        cached = FETCH_CACHE.get(cache_key)
-        if cached is not None:
-            return apply_window({**cached, "url": url, "cached": True}, start_index, max_length)
+    result = None
+    if use_cache and max_age_seconds != 0:
+        cached_entry = FETCH_CACHE.get_with_age(cache_key)
+        if cached_entry is not None:
+            cached, age = cached_entry
+            if max_age_seconds < 0 or age <= max_age_seconds:
+                result = {
+                    **cached,
+                    "url": url,
+                    "cached": True,
+                    "cache_age": round(age, 3),
+                }
 
-    RATE_LIMITER.wait(url)
-    try:
-        result = _do_fetch_file(url, mode, compress, timeout, respect_robots=respect_robots)
-    except FetchError as exc:
-        return {
-            "success": False,
-            "url": url,
-            "mode": mode,
-            "error": str(exc),
-            "error_code": exc.error_code,
-        }
+    if result is None:
+        RATE_LIMITER.wait(url)
+        try:
+            result = _do_fetch_file(url, mode, compress, timeout, respect_robots=respect_robots)
+        except FetchError as exc:
+            return {
+                "success": False,
+                "url": url,
+                "mode": mode,
+                "error": str(exc),
+                "error_code": exc.error_code,
+            }
 
-    # 单条目过大时不进缓存，避免 64 条大页面把内存撑爆
-    if result.get("success") and len(result.get("content", "")) <= MAX_CACHE_CONTENT_BYTES:
-        FETCH_CACHE.put(cache_key, result)
-    return apply_window(result, start_index, max_length)
+        # 单条目过大时不进缓存，避免 64 条大页面把内存撑爆
+        if result.get("success") and len(result.get("content", "")) <= MAX_CACHE_CONTENT_BYTES:
+            FETCH_CACHE.put(cache_key, result)
+
+    return _finalize_fetch_result(result, query, max_tokens, start_index, max_length)
 
 
 def _compress_html_text(html: str) -> str | None:
@@ -588,8 +624,11 @@ def smart3w_fetch(
     start_index: int = 0,
     use_cache: bool = True,
     respect_robots: bool | None = None,
+    max_age_seconds: int = -1,
+    query: str = "",
+    max_tokens: int = 0,
 ) -> dict[str, object]:
-    """Fetch and extract content from a webpage (支持 TTL 缓存与 robots 检查).
+    """Fetch and extract content from a webpage (支持 TTL 缓存、robots 与内容筛选).
 
     Args:
         url: The webpage URL to fetch
@@ -603,15 +642,19 @@ def smart3w_fetch(
         use_cache: Whether to use the in-memory TTL cache (True) or force re-fetch (False)
         respect_robots: Whether to respect robots.txt; None 表示跟随环境变量
                         SMART3W_RESPECT_ROBOTS（默认关闭）
+        max_age_seconds: 缓存最大可接受年龄（秒）；-1 使用全局 TTL，0 强制跳过缓存
+        query: 可选查询词，只保留正文中最相关的段落（不改变缓存原文）
+        max_tokens: 可选上下文预算，按 4 字符≈1 token 粗估；0 表示不限制
 
     Returns:
         dict: {success, url, mode, method, content, total_length,
-               chars_returned, truncated, cached, log,
-               format?, pages?/sheets?/slides?, document?}
+               chars_returned, truncated, cached, cache_age?, log,
+               original_length?, filter?, format?, pages?/sheets?/slides?, document?}
     """
     if not isinstance(url, str):
         url = ""
     url = url.strip()
+    query = query.strip() if isinstance(query, str) else ""
     error = None
     if mode not in FETCH_MODES:
         error = f"无效抓取模式: {mode}。可选: {', '.join(FETCH_MODES)}"
@@ -621,6 +664,12 @@ def smart3w_fetch(
         error = "max_length 必须是 0-200000 的整数（0 表示不截断）"
     elif not _is_int(start_index) or start_index < 0:
         error = "start_index 必须是非负整数"
+    elif not _is_int(max_age_seconds) or max_age_seconds < -1 or max_age_seconds > 604800:
+        error = "max_age_seconds 必须是 -1 或 0-604800 的整数"
+    elif not _is_int(max_tokens) or max_tokens < 0 or max_tokens > 200000:
+        error = "max_tokens 必须是 0-200000 的整数"
+    elif len(query) > 500:
+        error = "query 长度不能超过 500 字符"
     else:
         error = _validate_http_url(url)
     if error:
@@ -632,6 +681,7 @@ def smart3w_fetch(
     return _run_fetch_file(
         url, mode, compress, timeout, max_length, start_index,
         use_cache=use_cache, respect_robots=respect_robots,
+        max_age_seconds=max_age_seconds, query=query, max_tokens=max_tokens,
     )
 
 

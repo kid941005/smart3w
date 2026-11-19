@@ -2,7 +2,7 @@
 
 [![OpenClaw](https://img.shields.io/badge/OpenClaw-Compatible-green)](https://github.com/openclaw/openclaw)
 [![MIT](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-2.5.0-blue)](https://github.com/kid941005/smart3w/releases)
+[![Version](https://img.shields.io/badge/Version-2.6.0-blue)](https://github.com/kid941005/smart3w/releases)
 
 集 **SearXNG 网页搜索**、**Sitemap 解析** 与 **智能网页抓取** 于一体。
 
@@ -20,6 +20,8 @@
 | 🗺️ **站点发现** | `smart3w_map` 合并 sitemap、首页链接与可选搜索结果，快速盘点站点 URL |
 | 🧩 **结构化抽取** | `smart3w_extract` 用 CSS / XPath schema 抽取字段 |
 | 🧵 **后台任务** | `smart3w_crawl(run_async=true)` + `smart3w_job` 查询/取消长任务 |
+| ✂️ **正文筛选** | `smart3w_fetch(query=..., max_tokens=...)` 只保留相关段落并控制上下文长度 |
+| 🕒 **缓存新鲜度** | `smart3w_fetch(max_age_seconds=...)` 控制缓存年龄，`0` 强制刷新 |
 | 🔁 **多实例容灾** | 搜索主实例失败自动切换备用 SearXNG 实例 |
 | 🧠 **去重缓存** | URL 规范化 + TTL 缓存，重复请求秒回 |
 | 🗃️ **搜索缓存** | 搜索结果 TTL 缓存 + 透传 answers/corrections/suggestions/infobox |
@@ -120,7 +122,7 @@ smart3w-mcp
 | MCP 工具 | 说明 |
 | --- | --- |
 | `smart3w_search` | SearXNG 搜索（多实例 fallback、结果去重、TTL 缓存；可选 `read_top` 直接读正文） |
-| `smart3w_fetch` | 单 URL 抓取（smart/get/fetch/stealthy，缓存 + robots + 限速；自动解析 PDF/Office） |
+| `smart3w_fetch` | 单 URL 抓取（smart/get/fetch/stealthy，缓存 + robots + 限速；自动解析 PDF/Office；可选 `query` 相关段落筛选与 `max_age_seconds` 缓存新鲜度） |
 | `smart3w_crawl` | 批量抓取显式 URL，或用 `seed_url` + `max_depth`/`max_pages` 递归 BFS 抓取；`run_async=true` 提交后台任务 |
 | `smart3w_map` | 站点 URL 发现（sitemap + 首页链接 + 可选搜索） |
 | `smart3w_extract` | 按 CSS / XPath schema 结构化抽取字段 |
@@ -135,6 +137,7 @@ smart3w-mcp
 - `smart3w_map` 支持 `limit` / `search` / `include_sitemap` / `include_homepage` / `same_domain` / `path_include` / `path_exclude`；返回 `urls: [{url, source}]` 与各来源计数。
 - `smart3w_crawl` 递归模式使用 `seed_url`、`max_depth`（1-5）、`max_pages`（1-500）、`same_domain` 与路径过滤；`run_async=true` 返回 `job_id`，用 `smart3w_job(job_id)` 查询、`smart3w_job(job_id, cancel=true)` 取消。后台任务只保存在当前 MCP 进程内，重启后丢失。
 - `smart3w_extract` 接受 1-20 个 URL 与非空 `schema`，`mode=css|xpath`；schema 值可为选择器字符串或 `{selector|css|xpath, attr, all}` 对象，返回 `data` 与 `missing`。
+- `smart3w_fetch` 支持 `query`（只保留最相关段落，返回 `filter` 统计与 `original_length`）、`max_tokens`（按 4 字符≈1 token 估算上下文预算）、`max_age_seconds`（-1 跟随全局 TTL，0 强制跳过缓存，>0 限制缓存年龄；命中时返回 `cached` / `cache_age`）。
 
 ### MCP 客户端配置
 
@@ -443,11 +446,12 @@ smart3w/
 ├── mcp_server.py           # MCP 服务入口（FastMCP + Streamable HTTP）
 ├── smart3w_core.py         # 搜索 / Sitemap / 正文渲染核心（MCP 与 CLI 共用）
 ├── smart3w_discovery.py    # 站点链接发现 / 路径过滤 / CSS-XPath 结构化抽取
+├── smart3w_content.py      # 正文相关性筛选：按查询词选段、控制上下文预算
 ├── smart3w_document.py     # PDF / DOCX / XLSX / PPTX → Markdown
 ├── smart3w_fetch_utils.py  # 抓取治理：TTL 缓存 / robots / 限速
 ├── smart3w_url_utils.py    # 公共 URL 工具：规范化 / 追踪参数 / SSRF 检查
 ├── .github/workflows/      # CI（lint + 测试 + 打包）与 Docker 发布
-├── tests/                  # 单元测试（pytest，128 例）
+├── tests/                  # 单元测试（pytest，138 例）
 └── scripts/
     ├── fetch.sh            # 统一入口脚本（搜索 / 抓取 / Sitemap）
     ├── document_extract.py # 文档解析 CLI（PDF / Office → Markdown）
@@ -478,7 +482,13 @@ Python HTTP/curl/scrapling 策略降级，`smart3w_doctor` 仍需要 shell 环�
 
 ## 📝 更新日志
 
-### 2.5.0（开发中）
+### 2.6.0
+
+- **正文筛选（P2）**：`smart3w_fetch` 新增 `query` 与 `max_tokens`，按查询词对正文段落打分筛选，返回 `filter` 统计与 `original_length`，避免把整篇长文塞入上下文
+- **缓存新鲜度（P2）**：`smart3w_fetch` 新增 `max_age_seconds`，`0` 强制跳过缓存、`>0` 限制缓存年龄；命中缓存时返回 `cache_age`
+- **测试/模块**：新增 `smart3w_content.py` 与 10 个测试，共 138 例通过
+
+### 2.5.0
 
 - **站点发现（P1）**：新增 `smart3w_map`，合并 robots.txt/sitemap、首页链接与可选搜索结果，支持同站过滤、路径包含/排除与来源统计
 - **递归抓取（P1）**：`smart3w_crawl` 新增 `seed_url` + `max_depth`/`max_pages` BFS 站点抓取，保留原显式 URL 列表模式；所有发现链接均复用 `url_policy_error` 做 SSRF/allowlist 校验

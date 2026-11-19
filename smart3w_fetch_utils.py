@@ -25,7 +25,7 @@ from smart3w_url_utils import (  # noqa: F401  # 向后兼容：继续从本模�
     ssrf_blocked,
 )
 
-USER_AGENT = "Smart3W/2.5.0 (+https://github.com/kid941005/smart3w)"
+USER_AGENT = "Smart3W/2.6.0 (+https://github.com/kid941005/smart3w)"
 
 
 def _env_int(name: str, default: int) -> int:
@@ -67,7 +67,8 @@ class TTLCache:
         self._data: OrderedDict[object, tuple[float, object]] = OrderedDict()
         self._lock = threading.Lock()
 
-    def get(self, key: object) -> object | None:
+    def get_with_age(self, key: object) -> tuple[object, float] | None:
+        """返回 (value, age_seconds)；过期或不存在返回 None。"""
         if self.ttl <= 0:
             return None
         with self._lock:
@@ -75,11 +76,16 @@ class TTLCache:
             if entry is None:
                 return None
             ts, value = entry
-            if time.monotonic() - ts > self.ttl:
+            age = time.monotonic() - ts
+            if age > self.ttl:
                 del self._data[key]
                 return None
             self._data.move_to_end(key)
-            return value
+            return value, age
+
+    def get(self, key: object) -> object | None:
+        entry = self.get_with_age(key)
+        return entry[0] if entry is not None else None
 
     def put(self, key: object, value: object) -> None:
         if self.ttl <= 0:

@@ -1,7 +1,7 @@
 ---
 name: smart3w
 description: 智能网页抓取路由 + SearXNG 搜索，支持 PDF/Office 文档解析、搜索即读、站点地图发现、递归抓取与 CSS/XPath 结构化抽取。支持 4 种明确语义的抓取方式：get 使用 Python HTTP（逐跳 SSRF/robots，失败回退 curl），fetch 使用 scrapling extract fetch + --real-chrome，stealthy 使用 scrapling stealthy-fetch + --real-chrome，smart 按 Python HTTP → curl → fetch → stealthy 自动降级。支持并发批量抓取、URL 去重缓存、robots.txt 检查与按域名限速；搜索支持多 SearXNG 实例故障转移与语言/时间/分类/安全搜索/引擎参数。默认输出尽量为 Markdown：普通网页提取正文并尽量保留图片为 Markdown 图片链接，微信文章按正文段落输出并保留插图。
-version: 2.5.0
+version: 2.6.0
 license: MIT
 ---
 
@@ -88,7 +88,7 @@ license: MIT
 | 工具 | 说明 |
 | --- | --- |
 | `smart3w_search` | SearXNG 搜索（多实例 fallback、去重、TTL 缓存；可选 `read_top` 直接读正文） |
-| `smart3w_fetch` | 单 URL 抓取（smart/get/fetch/stealthy，缓存 + robots + 限速；自动解析 PDF/Office） |
+| `smart3w_fetch` | 单 URL 抓取（smart/get/fetch/stealthy，缓存 + robots + 限速；自动解析 PDF/Office；可选 `query` 相关段落筛选与 `max_age_seconds` 缓存新鲜度） |
 | `smart3w_crawl` | 批量抓取显式 URL，或用 `seed_url` + `max_depth`/`max_pages` 递归 BFS 抓取；`run_async=true` 提交后台任务 |
 | `smart3w_map` | 站点 URL 发现（sitemap + 首页链接 + 可选搜索） |
 | `smart3w_extract` | 按 CSS / XPath schema 结构化抽取字段 |
@@ -98,11 +98,14 @@ license: MIT
 
 > `smart3w_search` / `smart3w_sitemap` 直接调用 `smart3w_core.py`；
 > `smart3w_map` / `smart3w_extract` 与递归 crawl 的链接发现复用 `smart3w_discovery.py`；
-> `smart3w_fetch` / `smart3w_crawl` 的页面抓取仍由 `fetch.sh` 执行 Python HTTP/curl/scrapling 策略降级。
+> `smart3w_fetch` / `smart3w_crawl` 的页面抓取仍由 `fetch.sh` 执行 Python HTTP/curl/scrapling 策略降级；
+> `smart3w_fetch` 的相关段落筛选复用 `smart3w_content.py`。
 
 **搜索即读**：`smart3w_search(read_top=2, content_max_chars=5000)` 会在搜索后直接抓取前 2 条结果正文；每条结果增加 `content`、`content_truncated`、`content_total_length`、`effective_url`、`read_error`、`read_error_code`，顶层增加 `read_top`、`read_succeeded`、`read_failed`。
 
 **文档解析**：`smart3w_fetch` 自动把 PDF、DOCX、XLSX、PPTX 解析为 Markdown；结果增加 `format`、`pages`、`sheets`、`slides`、`paragraphs`、`tables`、`chars`、`document`。旧版 Office 文件和扫描版 PDF 会返回明确错误。
+
+**正文筛选与缓存新鲜度**：`smart3w_fetch(query="关键词", max_tokens=2000, max_age_seconds=60)` 只保留最相关段落并控制上下文预算（4 字符≈1 token），同时限制缓存年龄；`max_age_seconds=0` 强制跳过缓存，命中时返回 `cache_age`。
 
 **站点发现**：`smart3w_map(url, limit=200, search="", include_sitemap=True, include_homepage=True, same_domain=True, path_include="", path_exclude="")` 返回 `urls: [{url, source}]` 与来源计数。
 
