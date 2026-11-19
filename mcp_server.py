@@ -39,7 +39,7 @@ from smart3w_fetch_utils import (
 )
 from smart3w_url_utils import normalize_url, ssrf_blocked, url_policy_error
 
-__version__ = "2.6.0"
+__version__ = "2.6.1"
 
 SERVER_DIR = Path(__file__).resolve().parent
 FETCH_SH = SERVER_DIR / "scripts" / "fetch.sh"
@@ -801,6 +801,8 @@ def smart3w_map(
 
     homepage_error = ""
     if include_homepage:
+        # 站点根 URL 本身始终计入，避免没有 sitemap/站内链接的站点返回空结果
+        _add(seed, "homepage")
         fetched = _run_fetch_file(
             seed, "get", False, 20, 0, 0,
             use_cache=True, respect_robots=respect_robots,

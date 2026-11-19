@@ -321,9 +321,10 @@ def test_map_collects_sitemap_and_homepage_links(monkeypatch):
     result = mcp_server.smart3w_map("https://example.com/", limit=10)
 
     assert result["success"] is True
-    assert result["count"] == 2
-    assert result["sources"] == {"sitemap": 1, "homepage": 1}
+    assert result["count"] == 3
+    assert result["sources"] == {"sitemap": 1, "homepage": 2}
     assert {item["url"] for item in result["urls"]} == {
+        "https://example.com/",
         "https://example.com/from-sitemap",
         "https://example.com/from-home",
     }

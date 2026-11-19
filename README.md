@@ -2,7 +2,7 @@
 
 [![OpenClaw](https://img.shields.io/badge/OpenClaw-Compatible-green)](https://github.com/openclaw/openclaw)
 [![MIT](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-2.6.0-blue)](https://github.com/kid941005/smart3w/releases)
+[![Version](https://img.shields.io/badge/Version-2.6.1-blue)](https://github.com/kid941005/smart3w/releases)
 
 集 **SearXNG 网页搜索**、**Sitemap 解析** 与 **智能网页抓取** 于一体。
 
@@ -481,6 +481,10 @@ Python HTTP/curl/scrapling 策略降级，`smart3w_doctor` 仍需要 shell 环�
 ---
 
 ## 📝 更新日志
+
+### 2.6.1
+
+- **站点发现修复**：`smart3w_map` 始终把站点根 URL 计入结果，避免没有 sitemap/站内链接的站点返回空结果
 
 ### 2.6.0
 
