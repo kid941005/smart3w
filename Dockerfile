@@ -46,7 +46,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # --------------------------------------------------------------------------
 COPY pyproject.toml README.md MANIFEST.in LICENSE ./
 COPY scripts/ ./scripts/
-COPY mcp_server.py smart3w_core.py smart3w_fetch_utils.py smart3w_url_utils.py ./
+COPY mcp_server.py smart3w_core.py smart3w_discovery.py smart3w_document.py smart3w_fetch_utils.py smart3w_url_utils.py ./
 
 RUN chmod +x scripts/fetch.sh && pip install --no-cache-dir --no-deps .
 

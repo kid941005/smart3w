@@ -2,7 +2,7 @@
 
 [![OpenClaw](https://img.shields.io/badge/OpenClaw-Compatible-green)](https://github.com/openclaw/openclaw)
 [![MIT](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-2.4.0-blue)](https://github.com/kid941005/smart3w/releases)
+[![Version](https://img.shields.io/badge/Version-2.5.0-blue)](https://github.com/kid941005/smart3w/releases)
 
 集 **SearXNG 网页搜索**、**Sitemap 解析** 与 **智能网页抓取** 于一体。
 
@@ -16,7 +16,10 @@
 | 📄 **网页抓取** | 分层策略架构，稳定可靠 |
 | 📚 **文档解析** | PDF / Word / Excel / PowerPoint 自动转 Markdown |
 | 🧾 **搜索即读** | 可选直接读取前 N 条搜索结果的正文 |
-| 🚀 **批量抓取** | `smart3w_crawl` 并发抓取 + URL 去重 |
+| 🚀 **批量/递归抓取** | `smart3w_crawl` 并发抓取显式 URL，或从 seed_url 按深度 BFS 递归抓取 |
+| 🗺️ **站点发现** | `smart3w_map` 合并 sitemap、首页链接与可选搜索结果，快速盘点站点 URL |
+| 🧩 **结构化抽取** | `smart3w_extract` 用 CSS / XPath schema 抽取字段 |
+| 🧵 **后台任务** | `smart3w_crawl(run_async=true)` + `smart3w_job` 查询/取消长任务 |
 | 🔁 **多实例容灾** | 搜索主实例失败自动切换备用 SearXNG 实例 |
 | 🧠 **去重缓存** | URL 规范化 + TTL 缓存，重复请求秒回 |
 | 🗃️ **搜索缓存** | 搜索结果 TTL 缓存 + 透传 answers/corrections/suggestions/infobox |
@@ -115,10 +118,13 @@ smart3w-mcp
 ```
 
 | MCP 工具 | 说明 |
-|----------|------|
-| `smart3w_search` | SearXNG 搜索（多实例 fallback、结果去重、TTL 缓存） |
-| `smart3w_fetch` | 单 URL 抓取（smart/get/fetch/stealthy，缓存 + robots + 限速） |
-| `smart3w_crawl` | 批量抓取（并发、去重、非法 URL 报告、结果保持输入顺序） |
+| --- | --- |
+| `smart3w_search` | SearXNG 搜索（多实例 fallback、结果去重、TTL 缓存；可选 `read_top` 直接读正文） |
+| `smart3w_fetch` | 单 URL 抓取（smart/get/fetch/stealthy，缓存 + robots + 限速；自动解析 PDF/Office） |
+| `smart3w_crawl` | 批量抓取显式 URL，或用 `seed_url` + `max_depth`/`max_pages` 递归 BFS 抓取；`run_async=true` 提交后台任务 |
+| `smart3w_map` | 站点 URL 发现（sitemap + 首页链接 + 可选搜索） |
+| `smart3w_extract` | 按 CSS / XPath schema 结构化抽取字段 |
+| `smart3w_job` | 查询或取消 `smart3w_crawl(run_async=true)` 的后台任务 |
 | `smart3w_sitemap` | Sitemap / Sitemap Index 解析（可选 `recursive` 递归展开） |
 | `smart3w_doctor` | 运行依赖与环境自检 |
 
@@ -126,6 +132,9 @@ smart3w-mcp
 
 - `smart3w_search` 新增 `read_top`（0-5，默认 0）与 `content_max_chars`（0-200000，默认 5000）。设置 `read_top>0` 时会直接抓取前 N 条结果正文，返回每条 `content` / `content_truncated` / `content_total_length` / `effective_url` / `read_error` / `read_error_code`，并在顶层返回 `read_top` / `read_succeeded` / `read_failed`。
 - `smart3w_fetch` 会按 Content-Type、URL 扩展名和文件头自动识别 PDF / DOCX / XLSX / PPTX，并解析为 Markdown；成功结果增加 `format` / `pages` / `sheets` / `slides` / `paragraphs` / `tables` / `chars` / `document`。旧版 `.doc/.xls/.ppt` 会明确报错，扫描版 PDF 会提示需要 OCR。
+- `smart3w_map` 支持 `limit` / `search` / `include_sitemap` / `include_homepage` / `same_domain` / `path_include` / `path_exclude`；返回 `urls: [{url, source}]` 与各来源计数。
+- `smart3w_crawl` 递归模式使用 `seed_url`、`max_depth`（1-5）、`max_pages`（1-500）、`same_domain` 与路径过滤；`run_async=true` 返回 `job_id`，用 `smart3w_job(job_id)` 查询、`smart3w_job(job_id, cancel=true)` 取消。后台任务只保存在当前 MCP 进程内，重启后丢失。
+- `smart3w_extract` 接受 1-20 个 URL 与非空 `schema`，`mode=css|xpath`；schema 值可为选择器字符串或 `{selector|css|xpath, attr, all}` 对象，返回 `data` 与 `missing`。
 
 ### MCP 客户端配置
 
@@ -433,11 +442,12 @@ smart3w/
 ├── docker-compose.yml      # Compose 部署示例
 ├── mcp_server.py           # MCP 服务入口（FastMCP + Streamable HTTP）
 ├── smart3w_core.py         # 搜索 / Sitemap / 正文渲染核心（MCP 与 CLI 共用）
+├── smart3w_discovery.py    # 站点链接发现 / 路径过滤 / CSS-XPath 结构化抽取
 ├── smart3w_document.py     # PDF / DOCX / XLSX / PPTX → Markdown
 ├── smart3w_fetch_utils.py  # 抓取治理：TTL 缓存 / robots / 限速
 ├── smart3w_url_utils.py    # 公共 URL 工具：规范化 / 追踪参数 / SSRF 检查
 ├── .github/workflows/      # CI（lint + 测试 + 打包）与 Docker 发布
-├── tests/                  # 单元测试（pytest，114 例）
+├── tests/                  # 单元测试（pytest，128 例）
 └── scripts/
     ├── fetch.sh            # 统一入口脚本（搜索 / 抓取 / Sitemap）
     ├── document_extract.py # 文档解析 CLI（PDF / Office → Markdown）
@@ -460,14 +470,23 @@ CI 会在 Python 3.10 / 3.12 上运行 lint、单元测试，并校验 wheel 中
 `scripts/fetch.sh` 与 `scripts/smart3w_utils.py`。
 
 架构上，MCP 的 `smart3w_search` / `smart3w_sitemap` 直接调用 `smart3w_core.py`，
-不再经过 `fetch.sh` 子进程；`smart3w_fetch` / `smart3w_crawl` 仍由 `fetch.sh` 执行
+`smart3w_map` / `smart3w_crawl`（链接发现）与 `smart3w_extract`（字段抽取）复用
+`smart3w_discovery.py`；`smart3w_fetch` / `smart3w_crawl` 的页面抓取仍由 `fetch.sh` 执行
 Python HTTP/curl/scrapling 策略降级，`smart3w_doctor` 仍需要 shell 环境检查。
 
 ---
 
 ## 📝 更新日志
 
-### 2.4.0（开发中）
+### 2.5.0（开发中）
+
+- **站点发现（P1）**：新增 `smart3w_map`，合并 robots.txt/sitemap、首页链接与可选搜索结果，支持同站过滤、路径包含/排除与来源统计
+- **递归抓取（P1）**：`smart3w_crawl` 新增 `seed_url` + `max_depth`/`max_pages` BFS 站点抓取，保留原显式 URL 列表模式；所有发现链接均复用 `url_policy_error` 做 SSRF/allowlist 校验
+- **结构化抽取（P1）**：新增 `smart3w_extract`，按 CSS / XPath schema 并发抽取字段，返回 `data` / `missing`
+- **异步任务（P1）**：`smart3w_crawl(run_async=true)` 返回 `job_id`；新增 `smart3w_job` 查询进度、结果与取消（进程内任务，重启丢失）
+- **测试/模块**：新增 `smart3w_discovery.py` 与 14 个测试，共 128 例通过
+
+### 2.4.0
 
 - **搜索读正文**：`smart3w_search` 新增 `read_top`（0-5）与 `content_max_chars`（0-200000），可直接读取前 N 条搜索结果正文，返回 `content` / `content_truncated` / `content_total_length` / `effective_url` / `read_error` / `read_error_code`，顶层 `read_top` / `read_succeeded` / `read_failed`，避免 Agent 多次往返抓取；基础搜索结果缓存仍只存无正文版本
 - **文档解析**：`smart3w_fetch` 自动识别并解析 PDF / DOCX / XLSX / PPTX 为 Markdown，返回 `format` / `pages` / `sheets` / `slides` / `paragraphs` / `tables` / `chars` / `document`；旧版 `.doc/.xls/.ppt` 明确报错，扫描件提示需要 OCR

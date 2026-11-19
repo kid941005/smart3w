@@ -9,9 +9,12 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from mcp.server.fastmcp import FastMCP
 
@@ -20,9 +23,11 @@ from smart3w_core import (
     FETCH_MODES,
     SEARCH_TIME_RANGES,
     SitemapError,
+    collect_sitemap_entries,
     parse_sitemap,
     search_web,
 )
+from smart3w_discovery import extract_fields, extract_links, parse_robots_sitemaps, path_allowed, same_site
 from smart3w_fetch_utils import (
     DEFAULT_RESPECT_ROBOTS,
     DomainRateLimiter,
@@ -33,7 +38,7 @@ from smart3w_fetch_utils import (
 )
 from smart3w_url_utils import normalize_url, ssrf_blocked, url_policy_error
 
-__version__ = "2.4.0"
+__version__ = "2.5.0"
 
 SERVER_DIR = Path(__file__).resolve().parent
 FETCH_SH = SERVER_DIR / "scripts" / "fetch.sh"
@@ -320,6 +325,103 @@ def _run_fetch_file(
     return apply_window(result, start_index, max_length)
 
 
+def _compress_html_text(html: str) -> str | None:
+    """把原始 HTML 压缩为 Markdown；失败返回 None，调用方回退原始内容。"""
+    if not isinstance(html, str) or not html.strip():
+        return None
+    in_path = out_path = None
+    try:
+        from smart3w_core import compress_html
+
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".html", delete=False, encoding="utf-8", errors="replace"
+        ) as handle:
+            handle.write(html)
+            in_path = handle.name
+        fd, out_path = tempfile.mkstemp(suffix=".md")
+        os.close(fd)
+        if compress_html(in_path, out_path):
+            return Path(out_path).read_text(encoding="utf-8", errors="replace")
+        return None
+    except Exception:
+        return None
+    finally:
+        if in_path:
+            Path(in_path).unlink(missing_ok=True)
+        if out_path:
+            Path(out_path).unlink(missing_ok=True)
+
+
+def _origin_of(url: str) -> str:
+    """返回 URL 的 scheme://netloc；解析失败返回空字符串。"""
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return ""
+    if not parts.scheme or not parts.netloc:
+        return ""
+    return f"{parts.scheme}://{parts.netloc}"
+
+
+# 异步任务注册表：仅保存在当前 MCP 进程内，重启后丢失。
+JOBS: dict[str, dict] = {}
+JOBS_LOCK = threading.Lock()
+JOB_MAX_KEEP = 50
+
+
+def _job_view(job: dict) -> dict:
+    """返回可序列化的任务快照，不暴露内部锁/线程对象。"""
+    return {
+        "job_id": job["job_id"],
+        "status": job["status"],
+        "created_at": job["created_at"],
+        "started_at": job.get("started_at"),
+        "finished_at": job.get("finished_at"),
+        "cancel_requested": bool(job.get("cancel_requested")),
+        "result": job.get("result"),
+        "error": job.get("error"),
+    }
+
+
+def _new_job() -> dict:
+    """创建并登记一个后台任务。"""
+    job = {
+        "job_id": uuid.uuid4().hex,
+        "status": "queued",
+        "created_at": time.time(),
+        "cancel_requested": False,
+    }
+    with JOBS_LOCK:
+        JOBS[job["job_id"]] = job
+        # 控制内存：超过上限时移除最早完成的旧任务
+        if len(JOBS) > JOB_MAX_KEEP:
+            finished = [
+                key for key, value in JOBS.items()
+                if value.get("status") in ("completed", "failed", "cancelled")
+            ]
+            for key in finished[: len(JOBS) - JOB_MAX_KEEP]:
+                JOBS.pop(key, None)
+    return job
+
+
+def _run_job(job: dict, target, *args, **kwargs) -> None:
+    """后台线程入口：执行目标函数并记录结果/异常。"""
+    with JOBS_LOCK:
+        job["status"] = "running"
+        job["started_at"] = time.time()
+    try:
+        result = target(*args, **kwargs)
+        with JOBS_LOCK:
+            job["status"] = "cancelled" if job.get("cancel_requested") else "completed"
+            job["result"] = result
+            job["finished_at"] = time.time()
+    except Exception as exc:
+        with JOBS_LOCK:
+            job["status"] = "failed"
+            job["error"] = str(exc)
+            job["finished_at"] = time.time()
+
+
 # ---------------------------------------------------------------------------
 # MCP Tools
 # ---------------------------------------------------------------------------
@@ -534,33 +636,310 @@ def smart3w_fetch(
 
 
 @mcp.tool()
+def smart3w_map(
+    url: str,
+    limit: int = 200,
+    search: str = "",
+    include_sitemap: bool = True,
+    include_homepage: bool = True,
+    same_domain: bool = True,
+    path_include: str = "",
+    path_exclude: str = "",
+    respect_robots: bool = True,
+) -> dict[str, object]:
+    """Discover a site's URLs from sitemap, homepage links and optional search results.
+
+    Args:
+        url: 站点入口 URL（仅用于确定域名与首页）
+        limit: 最多返回 URL 数（1-5000）
+        search: 可选搜索词，用搜索结果的 URL 补充发现（会按同站过滤）
+        include_sitemap: 是否读取 robots.txt / sitemap.xml
+        include_homepage: 是否抓取首页并提取链接
+        same_domain: 是否只保留同站（含子域名）URL
+        path_include: 逗号分隔的路径包含模式，支持 * 通配符
+        path_exclude: 逗号分隔的路径排除模式，支持 * 通配符
+        respect_robots: 抓取首页时是否遵守 robots.txt
+
+    Returns:
+        dict: {success, url, count, limit, urls: [{url, source}], sources?,
+               sitemap_errors?, truncated?, error?}
+    """
+    seed = url.strip() if isinstance(url, str) else ""
+    url_error = _validate_http_url(seed)
+    if url_error:
+        return {"success": False, "url": seed, "count": 0, "urls": [],
+                "error": url_error, "error_code": "INVALID_ARGUMENT"}
+    if not _is_int(limit) or limit < 1 or limit > 5000:
+        return {"success": False, "url": seed, "count": 0, "urls": [],
+                "error": "limit 必须是 1-5000 的整数", "error_code": "INVALID_ARGUMENT"}
+    search = search.strip() if isinstance(search, str) else ""
+    origin = _origin_of(seed)
+    if not origin:
+        return {"success": False, "url": seed, "count": 0, "urls": [],
+                "error": "无法解析站点 origin", "error_code": "INVALID_ARGUMENT"}
+
+    urls: list[dict[str, str]] = []
+    seen: set[str] = set()
+    source_counts: dict[str, int] = {}
+    sitemap_errors: list[str] = []
+    host_policy: dict[str, str | None] = {}
+    truncated = False
+
+    def _policy_error(candidate: str) -> str | None:
+        try:
+            host = (urlsplit(candidate).hostname or "").strip().lower()
+        except ValueError:
+            return "URL 格式无效"
+        if host not in host_policy:
+            host_policy[host] = _validate_http_url(candidate)
+        return host_policy[host]
+
+    def _add(candidate: str, source: str) -> None:
+        nonlocal truncated
+        if not isinstance(candidate, str) or not candidate.strip():
+            return
+        candidate = candidate.strip()
+        if _policy_error(candidate):
+            return
+        if same_domain and not same_site(candidate, seed):
+            return
+        try:
+            path = urlsplit(candidate).path or "/"
+        except ValueError:
+            return
+        if not path_allowed(path, path_include, path_exclude):
+            return
+        key = normalize_url(candidate)
+        if not key or key in seen:
+            return
+        if len(urls) >= limit:
+            truncated = True
+            return
+        seen.add(key)
+        urls.append({"url": candidate, "source": source})
+        source_counts[source] = source_counts.get(source, 0) + 1
+
+    sitemap_roots: list[str] = []
+    if include_sitemap:
+        robots_url = origin.rstrip("/") + "/robots.txt"
+        robots = _run_fetch_file(
+            robots_url, "get", False, 10, 0, 0,
+            use_cache=True, respect_robots=False,
+        )
+        if robots.get("success"):
+            sitemap_roots.extend(parse_robots_sitemaps(robots.get("content", ""), origin))
+        default_sitemap = origin.rstrip("/") + "/sitemap.xml"
+        if normalize_url(default_sitemap) not in {normalize_url(item) for item in sitemap_roots}:
+            sitemap_roots.append(default_sitemap)
+        for sitemap_url in sitemap_roots[:10]:
+            if _policy_error(sitemap_url):
+                continue
+            try:
+                entries, errors, _truncated, _fetched = collect_sitemap_entries(
+                    sitemap_url, max_urls=max(limit, 50), recursive=True
+                )
+            except SitemapError as exc:
+                sitemap_errors.append(f"{sitemap_url}: {exc}")
+                continue
+            except Exception as exc:
+                sitemap_errors.append(f"{sitemap_url}: {exc}")
+                continue
+            sitemap_errors.extend(errors)
+            for _, kind, loc in entries:
+                if kind == "page":
+                    _add(loc, "sitemap")
+
+    homepage_error = ""
+    if include_homepage:
+        fetched = _run_fetch_file(
+            seed, "get", False, 20, 0, 0,
+            use_cache=True, respect_robots=respect_robots,
+        )
+        if fetched.get("success"):
+            base = fetched.get("effective_url") or seed
+            for link in extract_links(
+                fetched.get("content", ""), base,
+                same_domain=same_domain,
+                path_include=path_include,
+                path_exclude=path_exclude,
+                max_links=max(limit * 3, 100),
+            ):
+                _add(link["url"], "homepage")
+        else:
+            homepage_error = fetched.get("error") or "首页抓取失败"
+
+    if search:
+        try:
+            search_data = search_web(search, min(20, max(1, limit)), SEARXNG_INSTANCE)
+        except Exception as exc:
+            search_data = {"success": False, "error": str(exc)}
+        if search_data.get("success"):
+            for row in search_data.get("results") or []:
+                if isinstance(row, dict) and isinstance(row.get("url"), str):
+                    _add(row["url"], "search")
+        else:
+            sitemap_errors.append(f"search: {search_data.get('error') or '搜索失败'}")
+
+    out: dict[str, object] = {
+        "success": bool(urls) or not (sitemap_errors or homepage_error),
+        "url": seed,
+        "count": len(urls),
+        "limit": limit,
+        "urls": urls,
+        "sources": source_counts,
+    }
+    if sitemap_errors:
+        out["sitemap_errors"] = sitemap_errors[:20]
+    if homepage_error:
+        out["homepage_error"] = homepage_error
+    if truncated:
+        out["truncated"] = True
+    if not urls and (sitemap_errors or homepage_error):
+        out["error"] = "没有发现可用 URL"
+        out["error_code"] = "MAP_FAILED"
+    return out
+
+
+def _crawl_site(
+    seed_url: str,
+    mode: str,
+    compress: bool,
+    timeout: int,
+    max_length: int,
+    respect_robots: bool,
+    max_depth: int,
+    max_pages: int,
+    same_domain: bool,
+    path_include: str,
+    path_exclude: str,
+    job: dict | None = None,
+) -> dict[str, object]:
+    """从 seed_url 开始 BFS 递归抓取；每页先取原始 HTML 以发现链接，再压缩正文。"""
+    queue: list[tuple[str, int]] = [(seed_url, 0)]
+    queued: set[str] = {normalize_url(seed_url)}
+    visited: set[str] = set()
+    results: list[dict] = []
+    invalid: list[str] = []
+    while queue and len(results) < max_pages:
+        if job is not None and job.get("cancel_requested"):
+            break
+        url, depth = queue.pop(0)
+        key = normalize_url(url)
+        if key in visited:
+            continue
+        visited.add(key)
+        if _validate_http_url(url):
+            invalid.append(url)
+            continue
+        raw = _run_fetch_file(
+            url, mode, False, timeout, max_length=0, start_index=0,
+            use_cache=True, respect_robots=respect_robots,
+        )
+        if not raw.get("success"):
+            item = dict(raw)
+            item["depth"] = depth
+            results.append(apply_window(item, 0, max_length))
+            continue
+        html = raw.get("content", "")
+        content = html
+        if compress and not raw.get("format"):
+            content = _compress_html_text(html) or html
+        item = dict(raw)
+        item["content"] = content
+        item["depth"] = depth
+        item["crawled_url"] = url
+        results.append(apply_window(item, 0, max_length))
+
+        if depth >= max_depth or raw.get("format"):
+            continue
+        base = raw.get("effective_url") or url
+        for link in extract_links(
+            html, base,
+            same_domain=same_domain,
+            path_include=path_include,
+            path_exclude=path_exclude,
+            max_links=max(max_pages * 5, 100),
+        ):
+            link_key = normalize_url(link["url"])
+            if link_key and link_key not in visited and link_key not in queued:
+                queued.add(link_key)
+                queue.append((link["url"], depth + 1))
+
+    succeeded = sum(1 for item in results if item.get("success"))
+    out: dict[str, object] = {
+        "success": succeeded > 0,
+        "seed_url": seed_url,
+        "mode": "site",
+        "max_depth": max_depth,
+        "max_pages": max_pages,
+        "unique": len(visited),
+        "succeeded": succeeded,
+        "failed": len(results) - succeeded,
+        "truncated": bool(queue),
+        "results": results,
+    }
+    if invalid:
+        out["invalid"] = invalid
+    if succeeded == 0:
+        out["error"] = "递归抓取未取得任何页面"
+    return out
+
+
+@mcp.tool()
 def smart3w_crawl(
-    urls: list[str],
+    urls: list[str] | None = None,
     mode: str = "get",
     compress: bool = True,
     timeout: int = 20,
     max_length: int = 5000,
     concurrency: int = 3,
     respect_robots: bool = True,
+    seed_url: str = "",
+    max_depth: int = 0,
+    max_pages: int = 20,
+    same_domain: bool = True,
+    path_include: str = "",
+    path_exclude: str = "",
+    run_async: bool = False,
 ) -> dict[str, object]:
-    """Batch-fetch multiple URLs (URL 去重 + robots + 限速 + 缓存 + 并发).
+    """Batch-fetch URL 列表，或从 seed_url 递归抓取站点（BFS，可选后台任务）。
 
     Args:
-        urls: URL 列表（1-100 个）
+        urls: 显式 URL 列表（1-100 个）；与 seed_url 二选一
         mode: Fetch strategy — smart/get/fetch/stealthy
         compress: Whether to extract readable content (True) or raw HTML (False)
         timeout: Per-request timeout in seconds
         max_length: Maximum characters per result (0 = unlimited)
-        concurrency: Parallel workers (1-8)
+        concurrency: Parallel workers (1-8，仅显式列表模式)
         respect_robots: Whether to respect robots.txt (默认开启)
+        seed_url: 递归抓取的种子 URL；提供时进入站点递归模式
+        max_depth: 递归深度（1-5；seed_url 模式下 0 视为 1）
+        max_pages: 递归抓取最多页面数（1-500）
+        same_domain: 递归时是否只跟随同站（含子域名）链接
+        path_include: 逗号分隔的路径包含模式，支持 * 通配符
+        path_exclude: 逗号分隔的路径排除模式，支持 * 通配符
+        run_async: 是否把递归抓取提交为后台任务（仅 seed_url 模式）
 
     Returns:
-        dict: {success, requested, unique, duplicates_skipped, invalid?,
-               invalid_count, succeeded, failed, mode, results: [...]}
-        success 为 True 表示至少一个 URL 抓取成功；全部失败时为 False 并附带 error。
+        dict: 显式列表模式返回 {success, requested, unique, duplicates_skipped,
+               invalid?, succeeded, failed, mode, results: [...]}；
+              递归模式返回 {success, seed_url, mode: site, unique, succeeded,
+               failed, truncated, results: [...]}；
+              run_async=true 时返回 {success, job_id, status}。
     """
-    if not isinstance(urls, (list, tuple)) or not urls or len(urls) > 100:
-        return {"success": False, "error": "urls 必须是 1-100 个 URL"}
+    url_list = list(urls) if isinstance(urls, (list, tuple)) else []
+    seed = seed_url.strip() if isinstance(seed_url, str) else ""
+    if not _is_int(max_depth) or max_depth < 0 or max_depth > 5:
+        return {"success": False, "error": "max_depth 必须是 0-5 的整数"}
+    if not _is_int(max_pages) or max_pages < 1 or max_pages > 500:
+        return {"success": False, "error": "max_pages 必须是 1-500 的整数"}
+    if not seed and max_depth > 0:
+        if len(url_list) == 1:
+            seed = url_list[0].strip() if isinstance(url_list[0], str) else ""
+            url_list = []
+        elif url_list:
+            return {"success": False, "error": "递归抓取请提供 seed_url，或只传一个 URL"}
+
     if mode not in FETCH_MODES:
         return {"success": False, "error": f"无效抓取模式: {mode}"}
     if not _is_int(timeout) or timeout < 1 or timeout > 120:
@@ -569,11 +948,49 @@ def smart3w_crawl(
         return {"success": False, "error": "max_length 必须是 0-200000 的整数"}
     if not _is_int(concurrency) or concurrency < 1 or concurrency > 8:
         return {"success": False, "error": "concurrency 必须是 1-8 的整数"}
+    if not isinstance(run_async, bool):
+        return {"success": False, "error": "run_async 必须是布尔值"}
+
+    if seed:
+        if url_list:
+            return {"success": False, "error": "seed_url 与 urls 不能同时使用"}
+        seed_error = _validate_http_url(seed)
+        if seed_error:
+            return {"success": False, "seed_url": seed, "error": seed_error,
+                    "error_code": "INVALID_ARGUMENT"}
+        depth = 1 if max_depth == 0 else max_depth
+        if not _is_int(depth) or depth < 1 or depth > 5:
+            return {"success": False, "error": "max_depth 必须是 1-5 的整数"}
+        if not _is_int(max_pages) or max_pages < 1 or max_pages > 500:
+            return {"success": False, "error": "max_pages 必须是 1-500 的整数"}
+        if run_async:
+            job = _new_job()
+            thread = threading.Thread(
+                target=_run_job,
+                args=(
+                    job, _crawl_site, seed, mode, compress, timeout, max_length,
+                    respect_robots, depth, max_pages, same_domain, path_include, path_exclude,
+                ),
+                daemon=True,
+                name=f"smart3w-crawl-{job['job_id'][:8]}",
+            )
+            thread.start()
+            return {
+                "success": True, "job_id": job["job_id"], "status": "queued",
+                "seed_url": seed, "message": "任务已提交，请用 smart3w_job 查询进度和结果",
+            }
+        return _crawl_site(
+            seed, mode, compress, timeout, max_length, respect_robots,
+            depth, max_pages, same_domain, path_include, path_exclude,
+        )
+
+    if not url_list or len(url_list) > 100:
+        return {"success": False, "error": "urls 必须是 1-100 个 URL，或提供 seed_url"}
 
     invalid: list[str] = []
     unique: list[str] = []
     seen: set[str] = set()
-    for raw_url in urls:
+    for raw_url in url_list:
         if not isinstance(raw_url, str) or _validate_http_url(raw_url):
             invalid.append(raw_url if isinstance(raw_url, str) else repr(raw_url))
             continue
@@ -584,9 +1001,9 @@ def smart3w_crawl(
         seen.add(key)
         unique.append(url)
 
-    valid_count = len(urls) - len(invalid)
+    valid_count = len(url_list) - len(invalid)
     base = {
-        "requested": len(urls),
+        "requested": len(url_list),
         "unique": len(unique),
         "duplicates_skipped": max(0, valid_count - len(unique)),
         "invalid_count": len(invalid),
@@ -646,6 +1063,158 @@ def smart3w_crawl(
     if succeeded == 0:
         out["error"] = "所有 URL 抓取失败"
     return out
+
+
+@mcp.tool()
+def smart3w_extract(
+    urls: list[str],
+    schema: dict[str, object],
+    mode: str = "css",
+    timeout: int = 20,
+    concurrency: int = 3,
+    respect_robots: bool = True,
+) -> dict[str, object]:
+    """Fetch URLs and extract structured fields with CSS or XPath selectors.
+
+    Args:
+        urls: URL 列表（1-20 个）
+        schema: 字段定义对象，如 {"title": "h1", "links": {"selector": "a", "attr": "href", "all": true}}
+        mode: 选择器类型 css 或 xpath（不执行 LLM 抽取）
+        timeout: 每个 URL 的抓取超时（秒）
+        concurrency: 并发抓取数（1-8）
+        respect_robots: 是否遵守 robots.txt（默认开启）
+
+    Returns:
+        dict: {success, requested, unique, succeeded, failed,
+               results: [{url, success, data?, missing?, error?}]}
+    """
+    if isinstance(schema, str):
+        try:
+            schema = json.loads(schema)
+        except json.JSONDecodeError:
+            return {"success": False, "error": "schema 不是合法 JSON", "error_code": "INVALID_ARGUMENT"}
+    if not isinstance(schema, dict) or not schema:
+        return {"success": False, "error": "schema 必须是非空对象", "error_code": "INVALID_ARGUMENT"}
+    if mode not in ("css", "xpath"):
+        return {"success": False, "error": "mode 必须是 css 或 xpath", "error_code": "INVALID_ARGUMENT"}
+    if not isinstance(urls, (list, tuple)) or not urls or len(urls) > 20:
+        return {"success": False, "error": "urls 必须是 1-20 个 URL", "error_code": "INVALID_ARGUMENT"}
+    if not _is_int(timeout) or timeout < 1 or timeout > 120:
+        return {"success": False, "error": "timeout 必须是 1-120 的整数（秒）", "error_code": "INVALID_ARGUMENT"}
+    if not _is_int(concurrency) or concurrency < 1 or concurrency > 8:
+        return {"success": False, "error": "concurrency 必须是 1-8 的整数", "error_code": "INVALID_ARGUMENT"}
+
+    invalid: list[str] = []
+    unique: list[str] = []
+    seen: set[str] = set()
+    for raw_url in urls:
+        if not isinstance(raw_url, str) or _validate_http_url(raw_url):
+            invalid.append(raw_url if isinstance(raw_url, str) else repr(raw_url))
+            continue
+        url = raw_url.strip()
+        key = normalize_url(url)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(url)
+    if not unique:
+        return {
+            "success": False, "requested": len(urls), "unique": 0,
+            "invalid_count": len(invalid), "invalid": invalid,
+            "succeeded": 0, "failed": 0, "results": [],
+            "error": "没有可抽取的合法 URL", "error_code": "INVALID_ARGUMENT",
+        }
+
+    def _extract_one(url: str) -> dict:
+        raw = _run_fetch_file(
+            url, "get", False, timeout, max_length=0, start_index=0,
+            use_cache=True, respect_robots=respect_robots,
+        )
+        if not raw.get("success"):
+            return {
+                "url": url, "success": False,
+                "error": raw.get("error") or "抓取失败",
+                "error_code": raw.get("error_code", "FETCH_FAILED"),
+            }
+        if raw.get("format"):
+            return {
+                "url": url, "success": False,
+                "error": f"文档格式 {raw.get('format')} 不支持 CSS/XPath 抽取",
+                "error_code": "UNSUPPORTED_FORMAT",
+            }
+        try:
+            payload = extract_fields(raw.get("content", ""), schema, mode)
+        except Exception as exc:
+            return {"url": url, "success": False, "error": str(exc), "error_code": "EXTRACT_FAILED"}
+        row = {"url": url, "success": True, **payload}
+        if raw.get("effective_url"):
+            row["effective_url"] = raw["effective_url"]
+        return row
+
+    results_by_index: dict[int, dict] = {}
+    with ThreadPoolExecutor(max_workers=concurrency) as pool:
+        future_map = {pool.submit(_extract_one, url): idx for idx, url in enumerate(unique)}
+        for future in as_completed(future_map):
+            idx = future_map[future]
+            try:
+                results_by_index[idx] = future.result()
+            except Exception as exc:
+                results_by_index[idx] = {
+                    "url": unique[idx], "success": False,
+                    "error": str(exc), "error_code": "INTERNAL_ERROR",
+                }
+    results = [results_by_index[idx] for idx in range(len(unique))]
+    succeeded = sum(1 for row in results if row.get("success"))
+    out: dict[str, object] = {
+        "success": succeeded > 0,
+        "requested": len(urls),
+        "unique": len(unique),
+        "duplicates_skipped": max(0, len(urls) - len(invalid) - len(unique)),
+        "invalid_count": len(invalid),
+        "succeeded": succeeded,
+        "failed": len(results) - succeeded,
+        "results": results,
+    }
+    if invalid:
+        out["invalid"] = invalid
+    if succeeded == 0:
+        out["error"] = "所有 URL 抽取失败"
+    return out
+
+
+@mcp.tool()
+def smart3w_job(job_id: str = "", cancel: bool = False) -> dict[str, object]:
+    """Query or cancel a background crawl job created with smart3w_crawl(run_async=true).
+
+    Args:
+        job_id: 任务 id；留空则列出最近任务
+        cancel: 是否请求取消（仅 queued/running 任务有效）
+
+    Returns:
+        dict: {success, job_id?, status?, result?, error?} 或 {success, jobs, count}
+    """
+    if not isinstance(job_id, str):
+        job_id = str(job_id)
+    job_id = job_id.strip()
+    if not job_id:
+        with JOBS_LOCK:
+            jobs = sorted(JOBS.values(), key=lambda item: item.get("created_at", 0), reverse=True)
+            summaries = []
+            for job in jobs[:20]:
+                view = _job_view(job)
+                view.pop("result", None)
+                summaries.append(view)
+        return {"success": True, "jobs": summaries, "count": len(summaries)}
+
+    with JOBS_LOCK:
+        job = JOBS.get(job_id)
+        if job is None:
+            return {"success": False, "job_id": job_id,
+                    "error": "任务不存在（后台任务仅保存在当前 MCP 进程内）",
+                    "error_code": "JOB_NOT_FOUND"}
+        if cancel and job.get("status") in ("queued", "running"):
+            job["cancel_requested"] = True
+        return {"success": True, **_job_view(job)}
 
 
 @mcp.tool()

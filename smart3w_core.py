@@ -602,8 +602,12 @@ def _fetch_sitemap_root(url):
         raise SitemapError(f"解析失败: {exc}") from exc
 
 
-def parse_sitemap(sitemap_url, max_urls=50, recursive=False):
-    """解析 Sitemap，返回格式化文本；支持 index/urlset 与可选递归展开。"""
+def collect_sitemap_entries(sitemap_url, max_urls=50, recursive=False):
+    """解析 Sitemap，返回 (entries, errors, truncated, fetched_count)。
+
+    entries 为 [(lastmod, url_type, url)]，url_type 为 page 或 index。
+    该函数供 parse_sitemap（文本输出）与 smart3w_map（URL 发现）共用。
+    """
     if not isinstance(sitemap_url, str) or not sitemap_url.startswith(("http://", "https://")):
         raise SitemapError("仅支持 http/https sitemap URL")
     if (
@@ -671,14 +675,21 @@ def parse_sitemap(sitemap_url, max_urls=50, recursive=False):
             continue
         seen_urls.add(entry[2])
         unique.append(entry)
-    entries = unique[:max_urls]
+    return unique[:max_urls], errors, bool(queue), len(visited)
+
+
+def parse_sitemap(sitemap_url, max_urls=50, recursive=False):
+    """解析 Sitemap，返回格式化文本；支持 index/urlset 与可选递归展开。"""
+    entries, errors, truncated, _ = collect_sitemap_entries(
+        sitemap_url, max_urls, recursive=recursive
+    )
 
     lines = [f"✅ 共解析到 {len(entries)} 个URL", ""]
     for index, (lastmod, url_type, url) in enumerate(entries):
         prefix = "📋 " if url_type == "index" else "  "
         date_part = f"[{lastmod}] " if lastmod else "          "
         lines.append(f"{prefix}{index + 1:3d}. {date_part}{url}")
-    if queue:
+    if truncated:
         lines.append(
             f"\n... 已达到限制（max_urls={max_urls}，最多抓取 {SITEMAP_MAX_FETCHES} 个 sitemap / "
             f"{SITEMAP_TOTAL_TIMEOUT}s），仍有未展开的 sitemap"

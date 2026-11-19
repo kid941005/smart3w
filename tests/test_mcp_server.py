@@ -300,3 +300,140 @@ def test_resolve_bash_prefers_override(monkeypatch, tmp_path):
     fake.write_text("", encoding="utf-8")
     monkeypatch.setenv("SMART3W_BASH", str(fake))
     assert mcp_server._resolve_bash() == str(fake)
+
+def test_map_collects_sitemap_and_homepage_links(monkeypatch):
+    monkeypatch.setattr(mcp_server, "_validate_http_url", lambda url: None)
+
+    def fake_fetch(url, *args, **kwargs):
+        if url.endswith("/robots.txt"):
+            return {"success": True, "content": "Sitemap: https://example.com/sitemap.xml"}
+        return {
+            "success": True,
+            "content": '<a href="/from-home">Home</a>',
+            "effective_url": "https://example.com/",
+        }
+
+    def fake_collect(sitemap_url, max_urls=50, recursive=False):
+        return [("", "page", "https://example.com/from-sitemap")], [], False, 1
+
+    monkeypatch.setattr(mcp_server, "_run_fetch_file", fake_fetch)
+    monkeypatch.setattr(mcp_server, "collect_sitemap_entries", fake_collect)
+    result = mcp_server.smart3w_map("https://example.com/", limit=10)
+
+    assert result["success"] is True
+    assert result["count"] == 2
+    assert result["sources"] == {"sitemap": 1, "homepage": 1}
+    assert {item["url"] for item in result["urls"]} == {
+        "https://example.com/from-sitemap",
+        "https://example.com/from-home",
+    }
+
+
+def test_map_respects_path_filters(monkeypatch):
+    monkeypatch.setattr(mcp_server, "_validate_http_url", lambda url: None)
+
+    def fake_fetch(url, *args, **kwargs):
+        if url.endswith("/robots.txt"):
+            return {"success": False, "error": "not found"}
+        return {
+            "success": True,
+            "content": '<a href="/docs/a">A</a><a href="/blog/b">B</a>',
+        }
+
+    monkeypatch.setattr(mcp_server, "_run_fetch_file", fake_fetch)
+    result = mcp_server.smart3w_map(
+        "https://example.com/", include_sitemap=False, path_include="/docs/*"
+    )
+
+    assert [item["url"] for item in result["urls"]] == ["https://example.com/docs/a"]
+
+
+def test_crawl_site_bfs_follows_links(monkeypatch):
+    monkeypatch.setattr(mcp_server, "_validate_http_url", lambda url: None)
+    monkeypatch.setattr(mcp_server, "_compress_html_text", lambda html: html)
+
+    pages = {
+        "https://example.com/": '<a href="/a">A</a><a href="/b">B</a>',
+        "https://example.com/a": '<a href="/c">C</a>',
+        "https://example.com/b": "B page",
+        "https://example.com/c": "C page",
+    }
+
+    def fake_fetch(url, *args, **kwargs):
+        return {
+            "success": True,
+            "content": pages.get(url, ""),
+            "effective_url": url,
+        }
+
+    monkeypatch.setattr(mcp_server, "_run_fetch_file", fake_fetch)
+    result = mcp_server.smart3w_crawl(
+        seed_url="https://example.com/", max_depth=1, max_pages=10, compress=False
+    )
+
+    assert result["success"] is True
+    assert result["unique"] == 3
+    assert [item["crawled_url"] for item in result["results"]] == [
+        "https://example.com/",
+        "https://example.com/a",
+        "https://example.com/b",
+    ]
+
+
+def test_crawl_rejects_invalid_max_depth(monkeypatch):
+    result = mcp_server.smart3w_crawl(seed_url="https://example.com/", max_depth=9)
+    assert result["success"] is False
+    assert "max_depth" in result["error"]
+
+
+def test_extract_css_fields(monkeypatch):
+    monkeypatch.setattr(mcp_server, "_validate_http_url", lambda url: None)
+    monkeypatch.setattr(
+        mcp_server,
+        "_run_fetch_file",
+        lambda *args, **kwargs: {
+            "success": True,
+            "content": '<h1>Hello</h1><a href="/x">X</a>',
+        },
+    )
+    result = mcp_server.smart3w_extract(
+        ["https://example.com/page"],
+        {"title": "h1", "links": {"selector": "a", "attr": "href", "all": True}},
+    )
+
+    assert result["success"] is True
+    assert result["results"][0]["data"]["title"] == "Hello"
+    assert result["results"][0]["data"]["links"] == ["/x"]
+
+
+def test_extract_rejects_empty_schema(monkeypatch):
+    result = mcp_server.smart3w_extract(["https://example.com/"], {})
+    assert result["success"] is False
+    assert "schema" in result["error"]
+
+
+def test_job_missing_returns_not_found():
+    result = mcp_server.smart3w_job("does-not-exist")
+    assert result["success"] is False
+    assert result["error_code"] == "JOB_NOT_FOUND"
+
+
+def test_crawl_run_async_creates_and_completes_job(monkeypatch):
+    monkeypatch.setattr(mcp_server, "_validate_http_url", lambda url: None)
+    monkeypatch.setattr(
+        mcp_server, "_crawl_site", lambda *args, **kwargs: {"success": True, "results": []}
+    )
+    submitted = mcp_server.smart3w_crawl(
+        seed_url="https://example.com/", max_depth=1, run_async=True
+    )
+    assert submitted["success"] is True
+    assert submitted["status"] == "queued"
+
+    job_id = submitted["job_id"]
+    for _ in range(40):
+        job = mcp_server.smart3w_job(job_id)
+        if job["status"] in ("completed", "failed", "cancelled"):
+            break
+        time.sleep(0.05)
+    assert job["status"] == "completed"
+    assert job["result"]["success"] is True
