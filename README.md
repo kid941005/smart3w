@@ -2,7 +2,7 @@
 
 [![OpenClaw](https://img.shields.io/badge/OpenClaw-Compatible-green)](https://github.com/openclaw/openclaw)
 [![MIT](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-2.7.0-blue)](https://github.com/kid941005/smart3w/releases)
+[![Version](https://img.shields.io/badge/Version-2.7.1-blue)](https://github.com/kid941005/smart3w/releases)
 
 集 **SearXNG 网页搜索**、**Sitemap 解析** 与 **智能网页抓取** 于一体。
 
@@ -507,6 +507,11 @@ Python HTTP/curl/scrapling 策略降级，`smart3w_interact` 使用 Playwright �
 ---
 
 ## 📝 更新日志
+
+### 2.7.1
+
+- **隐私**：将 README、Dockerfile、compose 与默认配置中的私有部署域名替换为 `example.com` 占位；`.env` 加入 `.gitignore`
+- **部署**：默认 `SEARXNG_INSTANCE` 改为占位值，部署时请通过 `.env` 或环境变量设置真实地址
 
 ### 2.7.0
 
