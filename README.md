@@ -2,7 +2,7 @@
 
 [![OpenClaw](https://img.shields.io/badge/OpenClaw-Compatible-green)](https://github.com/openclaw/openclaw)
 [![MIT](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-2.6.1-blue)](https://github.com/kid941005/smart3w/releases)
+[![Version](https://img.shields.io/badge/Version-2.7.0-blue)](https://github.com/kid941005/smart3w/releases)
 
 集 **SearXNG 网页搜索**、**Sitemap 解析** 与 **智能网页抓取** 于一体。
 
@@ -20,6 +20,7 @@
 | 🗺️ **站点发现** | `smart3w_map` 合并 sitemap、首页链接与可选搜索结果，快速盘点站点 URL |
 | 🧩 **结构化抽取** | `smart3w_extract` 用 CSS / XPath schema 抽取字段 |
 | 🧵 **后台任务** | `smart3w_crawl(run_async=true)` + `smart3w_job` 查询/取消长任务 |
+| 🖱️ **浏览器交互** | `smart3w_interact` 在真实 Chrome 中点击、填写、登录、翻页并保存/复用登录状态 |
 | ✂️ **正文筛选** | `smart3w_fetch(query=..., max_tokens=...)` 只保留相关段落并控制上下文长度 |
 | 🕒 **缓存新鲜度** | `smart3w_fetch(max_age_seconds=...)` 控制缓存年龄，`0` 强制刷新 |
 | 🔁 **多实例容灾** | 搜索主实例失败自动切换备用 SearXNG 实例 |
@@ -50,7 +51,7 @@ pip install -e .
 
 只安装运行依赖时：
 ```bash
-pip install "mcp>=1.6,<2" "scrapling[all]>=0.4.2" "readability-lxml>=0.8.0" beautifulsoup4 \
+pip install "mcp>=1.6,<2" "scrapling[all]>=0.4.2" "playwright>=1.40" "readability-lxml>=0.8.0" beautifulsoup4 \
   "pypdf>=4.0.0" "python-docx>=1.1.0" "openpyxl>=3.1.0" "python-pptx>=0.6.23"
 ```
 
@@ -59,7 +60,7 @@ pip install "mcp>=1.6,<2" "scrapling[all]>=0.4.2" "readability-lxml>=0.8.0" beau
 - 如果缺失，脚本会提示：`压缩依赖缺失，需安装: readability-lxml beautifulsoup4`
 - 缺失时不会中断抓取，只会跳过压缩并保留原始 HTML
 
-**浏览器依赖（`fetch` / `stealthy` 必需）**：
+**浏览器依赖（`fetch` / `stealthy` / `smart3w_interact` 必需）**：
 
 - `get` 默认使用 Python HTTP（`httpx`），失败时回退 `curl`
 - `fetch` / `stealthy` 默认依赖 `Google Chrome Stable`，并使用 `--real-chrome`
@@ -127,6 +128,7 @@ smart3w-mcp
 | `smart3w_map` | 站点 URL 发现（sitemap + 首页链接 + 可选搜索） |
 | `smart3w_extract` | 按 CSS / XPath schema 结构化抽取字段 |
 | `smart3w_job` | 查询或取消 `smart3w_crawl(run_async=true)` 的后台任务 |
+| `smart3w_interact` | 真实浏览器交互：点击 / 填写 / 登录 / 翻页，支持 Cookie 与持久化 profile |
 | `smart3w_sitemap` | Sitemap / Sitemap Index 解析（可选 `recursive` 递归展开） |
 | `smart3w_doctor` | 运行依赖与环境自检 |
 
@@ -138,6 +140,7 @@ smart3w-mcp
 - `smart3w_crawl` 递归模式使用 `seed_url`、`max_depth`（1-5）、`max_pages`（1-500）、`same_domain` 与路径过滤；`run_async=true` 返回 `job_id`，用 `smart3w_job(job_id)` 查询、`smart3w_job(job_id, cancel=true)` 取消。后台任务只保存在当前 MCP 进程内，重启后丢失。
 - `smart3w_extract` 接受 1-20 个 URL 与非空 `schema`，`mode=css|xpath`；schema 值可为选择器字符串或 `{selector|css|xpath, attr, all}` 对象，返回 `data` 与 `missing`。
 - `smart3w_fetch` 支持 `query`（只保留最相关段落，返回 `filter` 统计与 `original_length`）、`max_tokens`（按 4 字符≈1 token 估算上下文预算）、`max_age_seconds`（-1 跟随全局 TTL，0 强制跳过缓存，>0 限制缓存年龄；命中时返回 `cached` / `cache_age`）。
+- `smart3w_interact` 接受 `url` 与声明式 `actions` 数组（goto/click/click_text/fill/press/select/check/uncheck/wait/wait_for_load/scroll，最多 50 个）；每个动作支持 `wait_ms`；`profile` 保存登录状态，`cookies` 注入初始 Cookie，`return_cookies=true` 返回最终 Cookie；所有浏览器请求逐跳通过 SSRF/主机白名单，`goto` 会做策略预检，`respect_robots` 检查起始 URL。浏览器不可用时返回 `BROWSER_UNAVAILABLE`。
 
 ### MCP 客户端配置
 
@@ -448,10 +451,11 @@ smart3w/
 ├── smart3w_discovery.py    # 站点链接发现 / 路径过滤 / CSS-XPath 结构化抽取
 ├── smart3w_content.py      # 正文相关性筛选：按查询词选段、控制上下文预算
 ├── smart3w_document.py     # PDF / DOCX / XLSX / PPTX → Markdown
+├── smart3w_interact.py     # 真实浏览器交互：动作白名单 / Cookie / profile / SSRF 请求拦截
 ├── smart3w_fetch_utils.py  # 抓取治理：TTL 缓存 / robots / 限速
 ├── smart3w_url_utils.py    # 公共 URL 工具：规范化 / 追踪参数 / SSRF 检查
 ├── .github/workflows/      # CI（lint + 测试 + 打包）与 Docker 发布
-├── tests/                  # 单元测试（pytest，138 例）
+├── tests/                  # 单元测试（pytest，149 例）
 └── scripts/
     ├── fetch.sh            # 统一入口脚本（搜索 / 抓取 / Sitemap）
     ├── document_extract.py # 文档解析 CLI（PDF / Office → Markdown）
@@ -476,11 +480,18 @@ CI 会在 Python 3.10 / 3.12 上运行 lint、单元测试，并校验 wheel 中
 架构上，MCP 的 `smart3w_search` / `smart3w_sitemap` 直接调用 `smart3w_core.py`，
 `smart3w_map` / `smart3w_crawl`（链接发现）与 `smart3w_extract`（字段抽取）复用
 `smart3w_discovery.py`；`smart3w_fetch` / `smart3w_crawl` 的页面抓取仍由 `fetch.sh` 执行
-Python HTTP/curl/scrapling 策略降级，`smart3w_doctor` 仍需要 shell 环境检查。
+Python HTTP/curl/scrapling 策略降级，`smart3w_interact` 使用 Playwright 驱动系统 Chrome 执行声明式动作，`smart3w_doctor` 仍需要 shell 环境检查。
 
 ---
 
 ## 📝 更新日志
+
+### 2.7.0
+
+- **浏览器交互（P2）**：新增 `smart3w_interact`，使用真实 Chrome 执行 goto / click / click_text / fill / press / select / check / uncheck / wait / wait_for_load / scroll 声明式动作，不执行任意 JavaScript
+- **登录状态**：支持 `profile` 持久化 Cookie/localStorage、`cookies` 注入与 `return_cookies` 导出，可完成登录后继续抓取
+- **安全**：每个浏览器请求逐跳复用 SSRF/主机白名单检查，`goto` 预检，robots 可选；未知动作、超长选择器与非法 profile 直接拒绝
+- **测试/模块**：新增 `smart3w_interact.py` 与 11 个测试，共 149 例通过
 
 ### 2.6.1
 

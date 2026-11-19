@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "smart3w"
-version = "2.6.1"
+version = "2.7.0"
 description = "智能网页搜索与抓取 MCP 服务器（SearXNG + Python HTTP + curl + scrapling）"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -16,6 +16,7 @@ dependencies = [
     "mcp>=1.6.0,<2",
     "httpx[socks]>=0.27",
     "scrapling[all]>=0.4.2",
+    "playwright>=1.40",
     "readability-lxml>=0.8.0",
     "beautifulsoup4>=4.12.0",
     "pypdf>=4.0.0",
@@ -38,7 +39,7 @@ Homepage = "https://github.com/kid941005/smart3w"
 Issues = "https://github.com/kid941005/smart3w/issues"
 
 [tool.setuptools]
-py-modules = ["mcp_server", "smart3w_content", "smart3w_core", "smart3w_discovery", "smart3w_document", "smart3w_fetch_utils", "smart3w_url_utils"]
+py-modules = ["mcp_server", "smart3w_content", "smart3w_core", "smart3w_discovery", "smart3w_document", "smart3w_fetch_utils", "smart3w_interact", "smart3w_url_utils"]
 packages = ["scripts"]
 include-package-data = true
 

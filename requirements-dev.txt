@@ -136,7 +136,9 @@ pillow==12.3.0 ; python_full_version < '3.11'
 pillow==13.0.0 ; python_full_version >= '3.11'
     # via python-pptx
 playwright==1.61.0
-    # via scrapling
+    # via
+    #   scrapling
+    #   smart3w
 pluggy==1.6.0
     # via pytest
 prompt-toolkit==3.0.53

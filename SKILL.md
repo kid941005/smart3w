@@ -1,7 +1,7 @@
 ---
 name: smart3w
-description: 智能网页抓取路由 + SearXNG 搜索，支持 PDF/Office 文档解析、搜索即读、站点地图发现、递归抓取与 CSS/XPath 结构化抽取。支持 4 种明确语义的抓取方式：get 使用 Python HTTP（逐跳 SSRF/robots，失败回退 curl），fetch 使用 scrapling extract fetch + --real-chrome，stealthy 使用 scrapling stealthy-fetch + --real-chrome，smart 按 Python HTTP → curl → fetch → stealthy 自动降级。支持并发批量抓取、URL 去重缓存、robots.txt 检查与按域名限速；搜索支持多 SearXNG 实例故障转移与语言/时间/分类/安全搜索/引擎参数。默认输出尽量为 Markdown：普通网页提取正文并尽量保留图片为 Markdown 图片链接，微信文章按正文段落输出并保留插图。
-version: 2.6.1
+description: 智能网页抓取路由 + SearXNG 搜索，支持 PDF/Office 文档解析、搜索即读、站点地图发现、递归抓取、CSS/XPath 结构化抽取与真实浏览器交互（点击/登录/翻页）。支持 4 种明确语义的抓取方式：get 使用 Python HTTP（逐跳 SSRF/robots，失败回退 curl），fetch 使用 scrapling extract fetch + --real-chrome，stealthy 使用 scrapling stealthy-fetch + --real-chrome，smart 按 Python HTTP → curl → fetch → stealthy 自动降级。支持并发批量抓取、URL 去重缓存、robots.txt 检查与按域名限速；搜索支持多 SearXNG 实例故障转移与语言/时间/分类/安全搜索/引擎参数。默认输出尽量为 Markdown：普通网页提取正文并尽量保留图片为 Markdown 图片链接，微信文章按正文段落输出并保留插图。
+version: 2.7.0
 license: MIT
 ---
 
@@ -93,13 +93,15 @@ license: MIT
 | `smart3w_map` | 站点 URL 发现（sitemap + 首页链接 + 可选搜索） |
 | `smart3w_extract` | 按 CSS / XPath schema 结构化抽取字段 |
 | `smart3w_job` | 查询或取消后台 crawl 任务 |
+| `smart3w_interact` | 真实浏览器交互：点击 / 填写 / 登录 / 翻页，支持 Cookie 与持久化 profile |
 | `smart3w_sitemap` | Sitemap / Sitemap Index 解析（可选 `recursive` 递归展开） |
 | `smart3w_doctor` | 运行依赖与环境自检 |
 
 > `smart3w_search` / `smart3w_sitemap` 直接调用 `smart3w_core.py`；
 > `smart3w_map` / `smart3w_extract` 与递归 crawl 的链接发现复用 `smart3w_discovery.py`；
 > `smart3w_fetch` / `smart3w_crawl` 的页面抓取仍由 `fetch.sh` 执行 Python HTTP/curl/scrapling 策略降级；
-> `smart3w_fetch` 的相关段落筛选复用 `smart3w_content.py`。
+> `smart3w_fetch` 的相关段落筛选复用 `smart3w_content.py`；
+> `smart3w_interact` 使用真实 Chrome 执行声明式动作，不执行任意 JavaScript。
 
 **搜索即读**：`smart3w_search(read_top=2, content_max_chars=5000)` 会在搜索后直接抓取前 2 条结果正文；每条结果增加 `content`、`content_truncated`、`content_total_length`、`effective_url`、`read_error`、`read_error_code`，顶层增加 `read_top`、`read_succeeded`、`read_failed`。
 
@@ -112,6 +114,8 @@ license: MIT
 **递归抓取与后台任务**：`smart3w_crawl(seed_url="https://example.com/", max_depth=2, max_pages=20, same_domain=True)` 进入 BFS 站点抓取；加 `run_async=true` 返回 `job_id`，用 `smart3w_job(job_id)` 查询、`smart3w_job(job_id, cancel=true)` 取消。任务仅存在于当前 MCP 进程。
 
 **结构化抽取**：`smart3w_extract(urls=[...], schema={"title": "h1", "links": {"selector": "a", "attr": "href", "all": true}}, mode="css")` 返回每条 URL 的 `data` 与 `missing`。
+
+**浏览器交互**：`smart3w_interact(url="https://example.com/login", actions=[{"type": "fill", "selector": "#user", "value": "alice"}, {"type": "fill", "selector": "#pass", "value": "..."}, {"type": "click", "selector": "button[type=submit]"}], profile="demo")` 在真实 Chrome 中执行动作并返回最终页面内容；再次使用 `profile="demo"` 可复用登录状态。支持 `return_cookies=true` 导出 Cookie。
 
 ### 批量抓取
 
