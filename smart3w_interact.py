@@ -19,7 +19,7 @@ import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from smart3w_url_utils import env_flag, proxy_url, ssrf_blocked, url_policy_error
+from smart3w_url_utils import env_flag, proxy_url, ssrf_blocked, url_policy_error, url_shape_error
 
 MAX_ACTIONS = 50
 MAX_ACTION_WAIT_MS = 10_000
@@ -128,6 +128,9 @@ def normalize_actions(actions: object) -> list[dict[str, object]]:
                 item.pop("selector", None)
         if kind == "goto":
             url = _require_text(raw.get("url"), f"{prefix}.url", max_length=8192)
+            shape_error = url_shape_error(url)
+            if shape_error:
+                raise InteractionError(f"{prefix}.url 格式无效: {shape_error}", "INVALID_ARGUMENT")
             blocked = ssrf_blocked(url)
             if blocked:
                 raise InteractionError(f"{prefix}.url 被安全策略拒绝: {blocked}", "SSRF_BLOCKED")
@@ -356,12 +359,13 @@ def _install_request_guard(page, blocked_errors: list[str]):
         url = request.url
         if not url.lower().startswith(("http://", "https://")):
             return route.continue_()
-        try:
-            parsed = urlsplit(url)
-            _ = parsed.port  # 触发非法端口校验
-        except ValueError:
-            blocked_errors.append(url)
+        # 每个请求都做形状校验：长度、控制字符、端口、userinfo 不能随 origin 缓存
+        shape_error = url_shape_error(url)
+        if shape_error:
+            if len(blocked_errors) < 20:
+                blocked_errors.append(f"{url}: {shape_error}")
             return route.abort("blockedbyclient")
+        parsed = urlsplit(url)
         # 不能只按 hostname 缓存：同 host 不同端口/凭据的请求策略可能不同
         key = (parsed.scheme.lower(), parsed.netloc.lower())
         if key not in policy_cache:

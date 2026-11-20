@@ -174,9 +174,11 @@ def _pdf_to_markdown(path: Path) -> tuple[str, dict[str, Any]]:
             reader = PdfReader(str(path))
             if reader.is_encrypted:
                 try:
-                    reader.decrypt("")
+                    decrypted = reader.decrypt("")
                 except Exception as exc:
                     raise DocumentError("PDF 已加密，无法解析") from exc
+                if not decrypted:
+                    raise DocumentError("PDF 已加密，无法解析")
             for page in reader.pages:
                 try:
                     pages.append((page.extract_text() or "").strip())

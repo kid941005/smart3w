@@ -2,7 +2,7 @@
 
 [![OpenClaw](https://img.shields.io/badge/OpenClaw-Compatible-green)](https://github.com/openclaw/openclaw)
 [![MIT](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-2.8.0-blue)](https://github.com/kid941005/smart3w/releases)
+[![Version](https://img.shields.io/badge/Version-2.8.1-blue)](https://github.com/kid941005/smart3w/releases)
 
 集 **SearXNG 网页搜索**、**Sitemap 解析** 与 **智能网页抓取** 于一体。
 
@@ -372,6 +372,8 @@ Smart3W 支持自动识别并优化提取微信公众号文章。
 | `SEARXNG_INSTANCE` | `https://searxng.example.com:59826` | SearXNG 地址（主实例；示例域名为占位） |
 | `SEARXNG_INSTANCES` | 空 | 备用 SearXNG 实例（逗号分隔），主实例失败时自动兜底 |
 | `SMART3W_SSL_VERIFY` | `1` | 是否校验 TLS 证书；自签证书实例可设为 `0`（不推荐） |
+| `SMART3W_MAX_DOWNLOAD_BYTES` | `52428800` | 单次下载上限（字节，默认 50MB）；Python HTTP 与 curl 生效，scrapling/stealthy 无法强制中断 |
+| `SMART3W_MAX_REDIRECTS` | `10` | curl 回退时手动跟随的最大重定向次数；每一跳都会重新做策略校验 |
 | `SMART3W_PORT` | `50826` | MCP HTTP 服务端口 |
 | `SMART3W_TIMEOUT` | `30` | MCP 层默认请求超时（秒） |
 | `SMART3W_CACHE_TTL` | `300` | 抓取结果缓存有效期（秒） |
@@ -432,9 +434,13 @@ services:
 > 否则无法防御“公网域名经代理解析到内网”的 SSRF。直接 IP 字面量和 localhost 仍会被拦截。
 > `SMART3W_SSL_VERIFY=0` 会关闭 TLS 证书校验（存在中间人风险），仅应在自建实例使用自签证书且无法更换证书时临时开启。
 >
-> 重定向 SSRF：`get` / `smart` 的 Python HTTP 路径与 `smart3w_sitemap` 已逐跳校验每个 redirect hop（SSRF + 可选 robots），
+> 重定向 SSRF：`get` / `smart` 的 Python HTTP 路径、curl 回退路径与 `smart3w_sitemap` 均已逐跳校验每个 redirect hop
+> （SSRF + 可选 robots）；curl 回退不再使用 `-L`，而是手动读取 `Location` 并在每一跳重新校验。
 > 但 `fetch` / `stealthy` 的浏览器内部跳转仍只能校验最终 URL；高安全场景请叠加出站网络策略
 > （只允许公网出口、代理白名单或 egress firewall），不要仅依赖应用层校验。
+>
+> 下载上限：`SMART3W_MAX_DOWNLOAD_BYTES` 对 Python HTTP 与 curl 生效；scrapling/stealthy 由第三方库驱动，
+> 无法强制中断超大响应，生产环境仍需出站流量/磁盘配额兜底。
 >
 > 环境变量中的非法数值会回退默认值，不会导致服务启动失败；但生产环境仍建议显式设置并纳入配置管理。
 
@@ -477,7 +483,7 @@ smart3w/
 ├── smart3w_fetch_utils.py  # 抓取治理：TTL 缓存 / robots / 限速
 ├── smart3w_url_utils.py    # 公共 URL 工具：规范化 / 追踪参数 / SSRF 检查
 ├── .github/workflows/      # CI（lint + 测试 + 打包）与 Docker 发布
-├── tests/                  # 单元测试（pytest，167 例）
+├── tests/                  # 单元测试（pytest，193 例）
 └── scripts/
     ├── fetch.sh            # 统一入口脚本（搜索 / 抓取 / Sitemap）
     ├── document_extract.py # 文档解析 CLI（PDF / Office → Markdown）
@@ -507,6 +513,17 @@ Python HTTP/curl/scrapling 策略降级，`smart3w_interact` 使用 Playwright �
 ---
 
 ## 📝 更新日志
+
+### 2.8.1
+
+- **安全（curl 重定向）**：curl 回退移除 `-L`，改为手动逐跳读取 `Location` 并在每一跳重新执行 allowlist/SSRF 校验；策略拒绝不再被降级为普通抓取失败
+- **安全（URL 形状）**：新增 `url_shape_error`，对每个 URL 校验长度、控制字符、端口、userinfo 与协议；`smart3w_map` 与 `smart3w_interact` 的同 origin 策略缓存不再跳过这些检查
+- **安全（下载上限）**：新增 `SMART3W_MAX_DOWNLOAD_BYTES`（默认 50MB），Python HTTP 检查 `Content-Length` 并流式限流，curl 使用 `--max-filesize`；超限返回明确错误
+- **修复（参数校验）**：fetch/map/crawl/extract/job/interact/sitemap 的布尔参数统一校验，字符串 `"false"` 不再被当作真值；`smart3w_map` 在三个来源全部关闭时返回 `INVALID_ARGUMENT`
+- **修复（错误码）**：递归 crawl 未取得任何页面时补 `CRAWL_FAILED`；crawl 早期参数校验（`max_depth`/`max_pages`/`timeout`/`max_length`/`concurrency` 等）与 sitemap 非法 `max_urls` 统一补 `INVALID_ARGUMENT`
+- **修复（启动参数）**：`MCP_TRANSPORT` 非法值直接报错，`MCP_PATH` 为空时回退 `/mcp`
+- **修复（文档解析）**：加密 PDF 空密码解密失败时返回“PDF 已加密”，不再误报扫描件；`document_extract` 写输出失败返回 1 而非 traceback
+- **测试/模块**：新增 URL 形状、策略缓存、curl 逐跳、下载上限、布尔参数、加密 PDF 等回归测试，共 193 例通过
 
 ### 2.8.0
 

@@ -40,6 +40,14 @@ class _Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
+        if self.path == "/large":
+            body = b"x" * 100
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if self.path == "/to-private":
             self.send_response(302)
             self.send_header("Location", "http://169.254.169.254/latest/meta-data")
@@ -105,3 +113,18 @@ def test_allowlist_blocks_non_listed_host(local_server, tmp_path, monkeypatch):
     monkeypatch.setenv("SMART3W_ALLOWED_HOSTS", "example.com")
     with pytest.raises(smart3w_http.BlockedURLError):
         smart3w_http.fetch_url(local_server + "/final", str(tmp_path / "x.html"), timeout=5)
+
+
+def test_download_limit_aborts_large_response(local_server, tmp_path, monkeypatch):
+    monkeypatch.setenv("SMART3W_MAX_DOWNLOAD_BYTES", "10")
+    output = tmp_path / "large.txt"
+    with pytest.raises(smart3w_http.DownloadTooLarge):
+        smart3w_http.fetch_url(local_server + "/large", str(output), timeout=5)
+    assert not output.exists()
+
+
+def test_resolve_url_joins_relative_location(capsys):
+    rc = smart3w_http.main(["--resolve-url", "https://example.com/a/b", "../c"])
+
+    assert rc == 0
+    assert capsys.readouterr().out.strip() == "https://example.com/c"

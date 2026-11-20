@@ -55,6 +55,25 @@ class HTTPXUnavailable(RuntimeError):
     """运行环境未安装 httpx；fetch.sh 会回退到 curl。"""
 
 
+class DownloadTooLarge(RuntimeError):
+    """响应体超过下载上限，避免恶意大文件写满磁盘。"""
+
+
+DEFAULT_MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024
+
+
+def _max_download_bytes() -> int:
+    """读取下载上限；非正整数回退 50MB。"""
+    raw = os.environ.get("SMART3W_MAX_DOWNLOAD_BYTES")
+    if raw is None:
+        return DEFAULT_MAX_DOWNLOAD_BYTES
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_MAX_DOWNLOAD_BYTES
+    return value if value > 0 else DEFAULT_MAX_DOWNLOAD_BYTES
+
+
 def _url_policy_error(url: str) -> str | None:
     """兼容内部调用名；实际校验逻辑统一在 smart3w_url_utils。"""
     return url_policy_error(url)
@@ -108,12 +127,16 @@ def _write_effective(path: str | None, url: str) -> None:
         pass
 
 
-def _write_body(output: str, chunks) -> None:
+def _write_body(output: str, chunks, max_bytes: int | None = None) -> None:
     """先写 .part 再原子替换，避免异常时留下被误判为成功的半截文件。"""
     part = output + ".part"
     try:
         with open(part, "wb") as fh:
+            total = 0
             for chunk in chunks:
+                total += len(chunk)
+                if max_bytes is not None and total > max_bytes:
+                    raise DownloadTooLarge(f"响应体超过下载上限 {max_bytes} 字节")
                 fh.write(chunk)
         os.replace(part, output)
     except Exception:
@@ -184,8 +207,16 @@ def fetch_url(
 
                 if not output:
                     raise ValueError("output 不能为空")
+                max_bytes = _max_download_bytes()
+                declared_length = response.headers.get("content-length")
+                if declared_length:
+                    try:
+                        if int(declared_length) > max_bytes:
+                            raise DownloadTooLarge(f"响应体超过下载上限 {max_bytes} 字节")
+                    except ValueError:
+                        pass
                 Path(output).parent.mkdir(parents=True, exist_ok=True)
-                _write_body(output, response.iter_bytes())
+                _write_body(output, response.iter_bytes(), max_bytes)
                 _write_effective(effective_url_path, str(response.url))
                 return response.headers.get("content-type", "")
 
@@ -194,7 +225,7 @@ def fetch_url(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Smart3W lightweight HTTP fetcher")
-    parser.add_argument("url")
+    parser.add_argument("url", nargs="?")
     parser.add_argument("output", nargs="?")
     parser.add_argument("--timeout", type=int, default=15)
     parser.add_argument("--ua", default=DEFAULT_USER_AGENT)
@@ -203,7 +234,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--respect-robots", action="store_true")
     parser.add_argument("--validate-only", action="store_true")
     parser.add_argument("--check-policy", action="store_true")
+    parser.add_argument("--resolve-url", nargs=2, metavar=("BASE", "LOCATION"))
     args = parser.parse_args(argv)
+
+    if args.resolve_url:
+        print(urllib.parse.urljoin(args.resolve_url[0], args.resolve_url[1]))
+        return 0
+    if not args.url:
+        parser.error("url 不能为空")
 
     if args.check_policy:
         error = _url_policy_error(args.url)
@@ -237,6 +275,9 @@ def main(argv: list[str] | None = None) -> int:
     except HTTPXUnavailable as exc:
         print(str(exc), file=sys.stderr)
         return 3
+    except DownloadTooLarge as exc:
+        print(f"抓取失败: {exc}", file=sys.stderr)
+        return 1
     except Exception as exc:
         if httpx is not None and isinstance(exc, httpx.TimeoutException):
             print(f"抓取超时: {exc}", file=sys.stderr)

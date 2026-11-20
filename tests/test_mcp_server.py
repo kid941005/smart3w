@@ -1,5 +1,6 @@
 """mcp_server 层测试：结构化返回、搜索缓存与 SSRF 拦截（无真实网络依赖）。"""
 
+import asyncio
 import subprocess
 import sys
 import threading
@@ -458,6 +459,7 @@ def test_crawl_rejects_invalid_max_depth(monkeypatch):
     result = mcp_server.smart3w_crawl(seed_url="https://example.com/", max_depth=9)
     assert result["success"] is False
     assert "max_depth" in result["error"]
+    assert result["error_code"] == "INVALID_ARGUMENT"
 
 
 def test_extract_css_fields(monkeypatch):
@@ -652,3 +654,138 @@ def test_sitemap_and_doctor_reject_non_boolean_options():
     assert sitemap["error_code"] == "INVALID_ARGUMENT"
     doctor = mcp_server.smart3w_doctor(check_search="yes")
     assert doctor["error_code"] == "INVALID_ARGUMENT"
+
+
+def test_sitemap_rejects_invalid_max_urls_with_error_code():
+    result = mcp_server.smart3w_sitemap("https://example.com/sitemap.xml", 0)
+    assert result["success"] is False
+    assert result["error_code"] == "INVALID_ARGUMENT"
+
+
+def test_main_rejects_invalid_transport_env(monkeypatch):
+    monkeypatch.setenv("MCP_TRANSPORT", "bogus")
+    with pytest.raises(SystemExit) as excinfo:
+        mcp_server.main([])
+    assert excinfo.value.code == 2
+
+
+def test_main_defaults_empty_path_to_mcp(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(mcp_server.mcp, "run", lambda **kwargs: captured.update(kwargs))
+    monkeypatch.setenv("MCP_PATH", "")
+    mcp_server.main(["--transport", "streamable-http"])
+    assert captured["streamable_http_path"] == "/mcp"
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"compress": "false"},
+        {"use_cache": "false"},
+        {"respect_robots": "false"},
+    ],
+)
+def test_fetch_rejects_non_boolean_flags(kwargs):
+    result = mcp_server.smart3w_fetch("https://example.com/", **kwargs)
+    assert result["success"] is False
+    assert result["error_code"] == "INVALID_ARGUMENT"
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["include_sitemap", "include_homepage", "same_domain", "respect_robots"],
+)
+def test_map_rejects_non_boolean_flags(monkeypatch, name):
+    monkeypatch.setattr(mcp_server, "_validate_http_url", lambda url: None)
+    result = mcp_server.smart3w_map("https://example.com/", **{name: "yes"})
+    assert result["success"] is False
+    assert result["error_code"] == "INVALID_ARGUMENT"
+
+
+def test_map_requires_at_least_one_source(monkeypatch):
+    monkeypatch.setattr(mcp_server, "_validate_http_url", lambda url: None)
+    result = mcp_server.smart3w_map(
+        "https://example.com/",
+        include_sitemap=False,
+        include_homepage=False,
+        search="",
+    )
+    assert result["success"] is False
+    assert result["error_code"] == "INVALID_ARGUMENT"
+
+
+def test_map_checks_url_shape_even_when_origin_is_cached(monkeypatch):
+    monkeypatch.setattr(mcp_server, "_validate_http_url", lambda url: None)
+    monkeypatch.setattr(mcp_server, "ssrf_blocked", lambda url: None)
+    monkeypatch.setattr(
+        mcp_server,
+        "extract_links",
+        lambda *args, **kwargs: [
+            {"url": "https://example.com/" + "a" * 9000},
+            {"url": "https://example.com/\x01bad"},
+        ],
+    )
+    monkeypatch.setattr(
+        mcp_server,
+        "_run_fetch_file",
+        lambda *args, **kwargs: {
+            "success": True,
+            "content": "",
+            "effective_url": "https://example.com/",
+        },
+    )
+    result = mcp_server.smart3w_map(
+        "https://example.com/", include_sitemap=False, include_homepage=True
+    )
+    assert result["success"] is True
+    assert [item["url"] for item in result["urls"]] == ["https://example.com/"]
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"compress": "false"},
+        {"respect_robots": "false"},
+        {"same_domain": "false"},
+        {"run_async": "false"},
+    ],
+)
+def test_crawl_rejects_non_boolean_flags(kwargs):
+    result = mcp_server.smart3w_crawl(urls=["https://example.com/"], **kwargs)
+    assert result["success"] is False
+    assert result["error_code"] == "INVALID_ARGUMENT"
+
+
+def test_crawl_seed_failure_sets_error_code(monkeypatch):
+    monkeypatch.setattr(mcp_server, "_validate_http_url", lambda url: None)
+    monkeypatch.setattr(
+        mcp_server,
+        "_run_fetch_file",
+        lambda *args, **kwargs: {"success": False, "error": "boom"},
+    )
+    result = mcp_server.smart3w_crawl(seed_url="https://example.com/", max_depth=1)
+    assert result["success"] is False
+    assert result["error_code"] == "CRAWL_FAILED"
+
+
+def test_extract_rejects_non_boolean_respect_robots(monkeypatch):
+    monkeypatch.setattr(mcp_server, "_validate_http_url", lambda url: None)
+    result = mcp_server.smart3w_extract(
+        ["https://example.com/"], {"title": "h1"}, respect_robots="false"
+    )
+    assert result["success"] is False
+    assert result["error_code"] == "INVALID_ARGUMENT"
+
+
+def test_job_rejects_non_boolean_cancel():
+    result = mcp_server.smart3w_job("missing", cancel="yes")
+    assert result["success"] is False
+    assert result["error_code"] == "INVALID_ARGUMENT"
+
+
+def test_interact_rejects_non_boolean_flags(monkeypatch):
+    monkeypatch.setattr(mcp_server, "_validate_http_url", lambda url: None)
+    for kwargs in ({"return_cookies": "yes"}, {"respect_robots": "no"}):
+        result = asyncio.run(mcp_server.smart3w_interact("https://example.com/", **kwargs))
+        assert result["success"] is False
+        assert result["error_code"] == "INVALID_ARGUMENT"

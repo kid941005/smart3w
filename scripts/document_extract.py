@@ -38,11 +38,14 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     output = Path(args.output) if args.output else Path(args.input).with_suffix(".md")
-    output.parent.mkdir(parents=True, exist_ok=True)
     part = output.with_name(output.name + ".part")
     try:
+        output.parent.mkdir(parents=True, exist_ok=True)
         part.write_text(result["markdown"], encoding="utf-8")
         os.replace(part, output)
+    except OSError as exc:
+        print(f"failed to write output: {exc}", file=sys.stderr)
+        return 1
     finally:
         try:
             part.unlink(missing_ok=True)

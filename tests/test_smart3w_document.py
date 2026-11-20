@@ -108,6 +108,20 @@ def test_extract_pptx(tmp_path):
     assert result["slides"] == 1
 
 
+def test_encrypted_pdf_reports_clear_error(tmp_path):
+    from pypdf import PdfWriter
+
+    path = tmp_path / "encrypted.pdf"
+    writer = PdfWriter()
+    writer.add_blank_page(width=200, height=200)
+    writer.encrypt("secret")
+    with path.open("wb") as handle:
+        writer.write(handle)
+
+    with pytest.raises(DocumentError, match="加密"):
+        extract_document_file(path)
+
+
 def test_empty_pdf_reports_ocr_hint(tmp_path):
     from pypdf import PdfWriter
 

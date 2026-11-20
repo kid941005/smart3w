@@ -279,8 +279,12 @@ def ssrf_blocked(url: str) -> str | None:
     return None
 
 
-def url_policy_error(url: str, max_length: int = 8192) -> str | None:
-    """统一 URL 形状 + 主机白名单 + SSRF 校验；MCP 与 HTTP 抓取器共用。"""
+def url_shape_error(url: str, max_length: int = 8192) -> str | None:
+    """只校验 URL 形状（长度/控制字符/scheme/userinfo/端口），不做 DNS/SSRF。
+
+    单独拆出来是为了让调用方在按 origin 缓存 SSRF 结果时，仍然逐 URL
+    执行形状校验，避免同一 origin 的后续 URL 绕过长度或控制字符检查。
+    """
     if not isinstance(url, str):
         return "URL 必须是字符串"
     raw = url.strip()
@@ -297,7 +301,15 @@ def url_policy_error(url: str, max_length: int = 8192) -> str | None:
         return "仅支持 http/https URL"
     if parsed.username or parsed.password:
         return "URL 不允许包含用户名/密码"
-    return ssrf_blocked(raw)
+    return None
+
+
+def url_policy_error(url: str, max_length: int = 8192) -> str | None:
+    """统一 URL 形状 + 主机白名单 + SSRF 校验；MCP 与 HTTP 抓取器共用。"""
+    shape_error = url_shape_error(url, max_length=max_length)
+    if shape_error:
+        return shape_error
+    return ssrf_blocked(url)
 
 
 class PolicyRedirectHandler(urllib.request.HTTPRedirectHandler):

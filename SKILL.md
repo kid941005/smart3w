@@ -1,7 +1,7 @@
 ---
 name: smart3w
 description: 智能网页抓取路由 + SearXNG 搜索，支持 PDF/Office 文档解析、搜索即读、站点地图发现、递归抓取、CSS/XPath 结构化抽取与真实浏览器交互（点击/登录/翻页）。支持 4 种明确语义的抓取方式：get 使用 Python HTTP（逐跳 SSRF/robots，失败回退 curl），fetch 使用 scrapling extract fetch + --real-chrome，stealthy 使用 scrapling stealthy-fetch + --real-chrome，smart 按 Python HTTP → curl → fetch → stealthy 自动降级。支持并发批量抓取、URL 去重缓存、robots.txt 检查与按域名限速；搜索支持多 SearXNG 实例故障转移与语言/时间/分类/安全搜索/引擎参数。默认输出尽量为 Markdown：普通网页提取正文并尽量保留图片为 Markdown 图片链接，微信文章按正文段落输出并保留插图。
-version: 2.8.0
+version: 2.8.1
 license: MIT
 ---
 
@@ -204,6 +204,8 @@ license: MIT
 | `SEARXNG_INSTANCE` | `https://searxng.example.com:59826` | SearXNG 实例地址（示例域名为占位） |
 | `SEARXNG_INSTANCES` | 空 | 备用 SearXNG 实例（逗号分隔），主实例失败时自动兜底 |
 | `SMART3W_SSL_VERIFY` | `1` | 是否校验 TLS 证书；自签证书实例可设为 `0`（不推荐） |
+| `SMART3W_MAX_DOWNLOAD_BYTES` | `52428800` | 单次下载上限（字节）；Python HTTP 与 curl 生效，scrapling/stealthy 无法强制中断 |
+| `SMART3W_MAX_REDIRECTS` | `10` | curl 回退时手动跟随的最大重定向次数；每跳重新做策略校验 |
 | `SMART3W_PYTHON` | 空（`python3`） | `fetch.sh` 调用的 Python 解释器；MCP 自动传入当前解释器 |
 | `SMART3W_CHROME` | 空（自动探测） | `fetch` / `stealthy` 使用的 Chrome 可执行文件路径 |
 | `SMART3W_CHROME_PATH` | 空（自动探测） | `smart3w_interact` 使用的 Chrome 路径 |

@@ -28,9 +28,15 @@ TIMEOUT_CURL=15
 TIMEOUT_SCRAPLING=10
 TIMEOUT_STEALTHY=20
 MAX_ATTEMPTS=2
+MAX_DOWNLOAD_BYTES="${SMART3W_MAX_DOWNLOAD_BYTES:-52428800}"
+MAX_REDIRECTS="${SMART3W_MAX_REDIRECTS:-10}"
 EFFECTIVE_URL_FILE=""
 FETCH_CONTENT_TYPE=""
 DASH_SEPARATOR=0
+
+# 环境变量非法时回退默认值，避免 curl 因参数错误直接失败
+[[ "$MAX_DOWNLOAD_BYTES" =~ ^[1-9][0-9]*$ ]] || MAX_DOWNLOAD_BYTES=52428800
+[[ "$MAX_REDIRECTS" =~ ^[0-9]+$ ]] || MAX_REDIRECTS=10
 
 # 解析参数
 REMOTE_ARGS=()
@@ -117,6 +123,19 @@ _policy_check_url() {
     return 0
 }
 
+# 解析 Location（支持相对地址）。没有 Python 时只接受绝对 URL。
+_resolve_url() {
+    local base="$1"
+    local location="$2"
+    if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
+        case "$location" in
+            http://*|https://*) printf '%s' "$location"; return 0 ;;
+            *) return 1 ;;
+        esac
+    fi
+    "$PYTHON_BIN" "$SCRIPT_DIR/smart3w_http.py" --resolve-url "$base" "$location"
+}
+
 # 有 timeout 命令时加上超时限制，没有时直接执行（提升 macOS 等环境兼容性）
 _run_with_timeout() {
     local seconds="$1"; shift
@@ -167,44 +186,86 @@ _fetch_by_curl() {
     local output="$2"
     local attempt=1
     local rc=0
+    local header_file=""
     local -a curl_args=(
-        -f -L -s --compressed
+        -f -s --compressed
         -A "$USER_AGENT"
         -H "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
         -H "Accept-Language: zh-CN,zh;q=0.9,en;q=0.8"
         -H "Connection: keep-alive"
         -H "Cache-Control: no-cache"
         --connect-timeout 10
-        --max-time "$TIMEOUT_CURL"
-        --max-redirs 10
+        --max-filesize "$MAX_DOWNLOAD_BYTES"
+        --proto "=http,https"
         -o "$output"
     )
     case "${SMART3W_SSL_VERIFY:-1}" in
         0|false|no|off) curl_args+=("-k") ;;
     esac
     [[ -n "$PROXY_URL" ]] && curl_args+=("--proxy" "$PROXY_URL")
-    curl_args+=("$url")
 
     _info "策略1: curl 抓取..."
 
     while [[ $attempt -le $MAX_ATTEMPTS ]]; do
         [[ $attempt -gt 1 ]] && _info "  第 $attempt/$MAX_ATTEMPTS 次尝试..."
         rc=0
+        header_file=$(_make_temp) || return 1
+        local current="$url"
+        local hop=0
+        local deadline=$((SECONDS + TIMEOUT_CURL))
 
-        # MCP 模式额外把最终 URL（跟随重定向后）写入侧车文件，供上层做 SSRF 复查。
-        # 必须以 curl 退出码判定成功，避免连接中断时把半截文件当成成功。
-        if [[ -n "$EFFECTIVE_URL_FILE" ]]; then
-            curl "${curl_args[@]}" -w $'\n%{url_effective}' >"$EFFECTIVE_URL_FILE" 2>/dev/null || rc=$?
-        else
-            curl "${curl_args[@]}" 2>/dev/null || rc=$?
-        fi
+        # 手动逐跳处理重定向：每一跳都重新做 allowlist/SSRF 校验，
+        # 不能使用 curl -L 一次性跟随，否则 302 可以绕过首跳预检。
+        while :; do
+            if ! _policy_check_url "$current"; then
+                rc=2
+                break
+            fi
+            local remaining=$((deadline - SECONDS))
+            if [[ $remaining -lt 1 ]]; then
+                rc=1
+                break
+            fi
+            : > "$header_file"
+            local code
+            code=$(curl "${curl_args[@]}" --max-time "$remaining" -D "$header_file" \
+                -w '%{http_code}' "$current" 2>/dev/null) || { rc=$?; break; }
 
-        if [[ $rc -eq 0 ]] && _is_valid_file "$output"; then
-            local size
-            size=$(wc -c < "$output")
-            _ok "  curl 成功 (${size}B)"
-            return 0
-        fi
+            if [[ "$code" =~ ^2[0-9][0-9]$ ]] && _is_valid_file "$output"; then
+                if [[ -n "$EFFECTIVE_URL_FILE" ]]; then
+                    printf '%s\n' "$current" > "$EFFECTIVE_URL_FILE"
+                fi
+                rm -f "$header_file"
+                header_file=""
+                local size
+                size=$(wc -c < "$output")
+                _ok "  curl 成功 (${size}B)"
+                return 0
+            fi
+
+            if [[ "$code" =~ ^3[0-9][0-9]$ ]]; then
+                if [[ $hop -ge $MAX_REDIRECTS ]]; then
+                    rc=1
+                    break
+                fi
+                local location
+                location=$(awk 'tolower($0) ~ /^location:/ { sub(/^[^:]*:[[:space:]]*/, ""); sub(/\r$/, ""); print; exit }' "$header_file")
+                if [[ -z "$location" ]]; then
+                    rc=1
+                    break
+                fi
+                current=$(_resolve_url "$current" "$location") || { rc=1; break; }
+                hop=$((hop + 1))
+                continue
+            fi
+
+            rc=1
+            break
+        done
+
+        rm -f "$header_file"
+        header_file=""
+        [[ $rc -eq 2 ]] && return 2
 
         attempt=$((attempt + 1))
         [[ $attempt -le $MAX_ATTEMPTS ]] && sleep 1
@@ -549,6 +610,9 @@ _run_fetch_mode() {
                 method_name="python-http"
             elif _fetch_by_curl "$url" "$raw_file"; then
                 method_name="curl"
+            else
+                local curl_rc=$?
+                [[ $curl_rc -eq 2 ]] && return 2
             fi
             ;;
         fetch)
@@ -565,10 +629,16 @@ _run_fetch_mode() {
                 method_name="python-http"
             elif _fetch_by_curl "$url" "$raw_file"; then
                 method_name="curl"
-            elif _fetch_by_scrapling "$url" "$raw_file"; then
-                method_name="scrapling-http"
-            elif _fetch_by_stealthy "$url" "$raw_file"; then
-                method_name="scrapling-stealthy"
+            else
+                local curl_rc=$?
+                [[ $curl_rc -eq 2 ]] && return 2
+            fi
+            if [[ -z "$method_name" ]]; then
+                if _fetch_by_scrapling "$url" "$raw_file"; then
+                    method_name="scrapling-http"
+                elif _fetch_by_stealthy "$url" "$raw_file"; then
+                    method_name="scrapling-stealthy"
+                fi
             fi
             ;;
         *)

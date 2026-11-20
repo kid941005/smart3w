@@ -46,9 +46,9 @@ from smart3w_interact import (
     run_interaction,
     validate_profile,
 )
-from smart3w_url_utils import normalize_url, ssrf_blocked, url_policy_error
+from smart3w_url_utils import normalize_url, ssrf_blocked, url_policy_error, url_shape_error
 
-__version__ = "2.8.0"
+__version__ = "2.8.1"
 
 SERVER_DIR = Path(__file__).resolve().parent
 FETCH_SH = SERVER_DIR / "scripts" / "fetch.sh"
@@ -106,6 +106,20 @@ class FetchCancelledError(FetchError):
 
 def _is_int(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _bool_error(value: object, name: str) -> str | None:
+    """校验必填布尔参数；返回错误信息或 None。"""
+    if not isinstance(value, bool):
+        return f"{name} 必须是布尔值"
+    return None
+
+
+def _optional_bool_error(value: object, name: str) -> str | None:
+    """校验可空布尔参数；None 表示跟随默认值。"""
+    if value is not None and not isinstance(value, bool):
+        return f"{name} 必须是布尔值或 null"
+    return None
 
 
 def _fetch_subprocess_timeout(timeout: int, mode: str) -> int:
@@ -803,10 +817,12 @@ def smart3w_fetch(
         timeout: Per-request timeout in seconds
         max_length: Maximum characters of content to return (0 = unlimited)
         start_index: 0-based offset into the extracted content (for pagination)
-        use_cache: Whether to use the in-memory TTL cache (True) or force re-fetch (False)
+        use_cache: Whether to use the in-memory TTL cache (True) or force re-fetch (False)。
+                    False 只跳过缓存读取，新抓取结果仍会写入缓存。
         respect_robots: Whether to respect robots.txt; None 表示跟随环境变量
                         SMART3W_RESPECT_ROBOTS（默认关闭）
-        max_age_seconds: 缓存最大可接受年龄（秒）；-1 使用全局 TTL，0 强制跳过缓存
+        max_age_seconds: 缓存最大可接受年龄（秒）；-1 使用全局 TTL，0 强制跳过缓存读取，
+                         新抓取结果仍会写入缓存
         query: 可选查询词，只保留正文中最相关的段落（不改变缓存原文）
         max_tokens: 可选上下文预算，按 4 字符≈1 token 粗估；0 表示不限制
 
@@ -832,6 +848,12 @@ def smart3w_fetch(
         error = "max_age_seconds 必须是 -1 或 0-604800 的整数"
     elif not _is_int(max_tokens) or max_tokens < 0 or max_tokens > 200000:
         error = "max_tokens 必须是 0-200000 的整数"
+    elif (bool_error := _bool_error(compress, "compress")):
+        error = bool_error
+    elif (bool_error := _bool_error(use_cache, "use_cache")):
+        error = bool_error
+    elif (bool_error := _optional_bool_error(respect_robots, "respect_robots")):
+        error = bool_error
     elif len(query) > 500:
         error = "query 长度不能超过 500 字符"
     else:
@@ -887,6 +909,20 @@ def smart3w_map(
         return {"success": False, "url": seed, "count": 0, "urls": [],
                 "error": "limit 必须是 1-5000 的整数", "error_code": "INVALID_ARGUMENT"}
     search = search.strip() if isinstance(search, str) else ""
+    for name, value in (
+        ("include_sitemap", include_sitemap),
+        ("include_homepage", include_homepage),
+        ("same_domain", same_domain),
+        ("respect_robots", respect_robots),
+    ):
+        bool_error = _bool_error(value, name)
+        if bool_error:
+            return {"success": False, "url": seed, "count": 0, "urls": [],
+                    "error": bool_error, "error_code": "INVALID_ARGUMENT"}
+    if not include_sitemap and not include_homepage and not search:
+        return {"success": False, "url": seed, "count": 0, "urls": [],
+                "error": "至少需要启用 include_sitemap、include_homepage 或提供 search",
+                "error_code": "INVALID_ARGUMENT"}
     origin = _origin_of(seed)
     if not origin:
         return {"success": False, "url": seed, "count": 0, "urls": [],
@@ -900,26 +936,19 @@ def smart3w_map(
     truncated = False
 
     def _policy_error(candidate: str) -> str | None:
-        """按 (scheme, netloc) 缓存策略结果，但先做完整 URL 形状校验。
+        """按 (scheme, netloc) 缓存 DNS/SSRF 结果，但每个 URL 都先做形状校验。
 
         不能只按 hostname 缓存：同一域名下不同端口、userinfo 或 scheme
-        的候选 URL 可能违反策略，复用一个 None 会绕过逐 URL 校验。
+        的候选 URL 可能违反策略，复用一个 None 会绕过逐 URL 校验；
+        长度和控制字符校验也必须逐 URL 执行，不能随 origin 缓存。
         """
-        try:
-            parsed = urlsplit(candidate)
-            _ = parsed.port  # 触发非法端口校验
-        except ValueError as exc:
-            return f"URL 格式无效: {exc}"
-        if (
-            parsed.scheme.lower() not in ("http", "https")
-            or not parsed.netloc
-            or parsed.username
-            or parsed.password
-        ):
-            return "仅支持 http/https URL，且不允许用户名/密码"
+        shape_error = url_shape_error(candidate)
+        if shape_error:
+            return shape_error
+        parsed = urlsplit(candidate)
         key = (parsed.scheme.lower(), parsed.netloc.lower())
         if key not in policy_cache:
-            policy_cache[key] = _validate_http_url(candidate)
+            policy_cache[key] = ssrf_blocked(candidate)
         return policy_cache[key]
 
     def _add(candidate: str, source: str) -> None:
@@ -1126,7 +1155,11 @@ def _crawl_site(
     if invalid:
         out["invalid"] = invalid
     if succeeded == 0:
-        out["error"] = "递归抓取未取得任何页面"
+        if _cancelled():
+            out["cancelled"] = True
+        else:
+            out["error"] = "递归抓取未取得任何页面"
+            out["error_code"] = "CRAWL_FAILED"
     return out
 
 
@@ -1175,30 +1208,45 @@ def smart3w_crawl(
     url_list = list(urls) if isinstance(urls, (list, tuple)) else []
     seed = seed_url.strip() if isinstance(seed_url, str) else ""
     if not _is_int(max_depth) or max_depth < 0 or max_depth > 5:
-        return {"success": False, "error": "max_depth 必须是 0-5 的整数"}
+        return {"success": False, "error": "max_depth 必须是 0-5 的整数",
+                "error_code": "INVALID_ARGUMENT"}
     if not _is_int(max_pages) or max_pages < 1 or max_pages > 500:
-        return {"success": False, "error": "max_pages 必须是 1-500 的整数"}
+        return {"success": False, "error": "max_pages 必须是 1-500 的整数",
+                "error_code": "INVALID_ARGUMENT"}
     if not seed and max_depth > 0:
         if len(url_list) == 1:
             seed = url_list[0].strip() if isinstance(url_list[0], str) else ""
             url_list = []
         elif url_list:
-            return {"success": False, "error": "递归抓取请提供 seed_url，或只传一个 URL"}
+            return {"success": False, "error": "递归抓取请提供 seed_url，或只传一个 URL",
+                    "error_code": "INVALID_ARGUMENT"}
 
     if mode not in FETCH_MODES:
-        return {"success": False, "error": f"无效抓取模式: {mode}"}
+        return {"success": False, "error": f"无效抓取模式: {mode}",
+                "error_code": "INVALID_ARGUMENT"}
     if not _is_int(timeout) or timeout < 1 or timeout > 120:
-        return {"success": False, "error": "timeout 必须是 1-120 的整数（秒）"}
+        return {"success": False, "error": "timeout 必须是 1-120 的整数（秒）",
+                "error_code": "INVALID_ARGUMENT"}
     if not _is_int(max_length) or max_length < 0 or max_length > 200000:
-        return {"success": False, "error": "max_length 必须是 0-200000 的整数"}
+        return {"success": False, "error": "max_length 必须是 0-200000 的整数",
+                "error_code": "INVALID_ARGUMENT"}
     if not _is_int(concurrency) or concurrency < 1 or concurrency > 8:
-        return {"success": False, "error": "concurrency 必须是 1-8 的整数"}
-    if not isinstance(run_async, bool):
-        return {"success": False, "error": "run_async 必须是布尔值"}
+        return {"success": False, "error": "concurrency 必须是 1-8 的整数",
+                "error_code": "INVALID_ARGUMENT"}
+    for name, value in (
+        ("compress", compress),
+        ("respect_robots", respect_robots),
+        ("same_domain", same_domain),
+        ("run_async", run_async),
+    ):
+        bool_error = _bool_error(value, name)
+        if bool_error:
+            return {"success": False, "error": bool_error, "error_code": "INVALID_ARGUMENT"}
 
     if seed:
         if url_list:
-            return {"success": False, "error": "seed_url 与 urls 不能同时使用"}
+            return {"success": False, "error": "seed_url 与 urls 不能同时使用",
+                    "error_code": "INVALID_ARGUMENT"}
         seed_error = _validate_http_url(seed)
         if seed_error:
             return {"success": False, "seed_url": seed, "error": seed_error,
@@ -1230,7 +1278,8 @@ def smart3w_crawl(
         )
 
     if not url_list or len(url_list) > 100:
-        return {"success": False, "error": "urls 必须是 1-100 个 URL，或提供 seed_url"}
+        return {"success": False, "error": "urls 必须是 1-100 个 URL，或提供 seed_url",
+                "error_code": "INVALID_ARGUMENT"}
 
     invalid: list[str] = []
     valid: list[str] = []
@@ -1353,6 +1402,8 @@ def smart3w_extract(
         return {"success": False, "error": "timeout 必须是 1-120 的整数（秒）", "error_code": "INVALID_ARGUMENT"}
     if not _is_int(concurrency) or concurrency < 1 or concurrency > 8:
         return {"success": False, "error": "concurrency 必须是 1-8 的整数", "error_code": "INVALID_ARGUMENT"}
+    if not isinstance(respect_robots, bool):
+        return {"success": False, "error": "respect_robots 必须是布尔值", "error_code": "INVALID_ARGUMENT"}
 
     invalid: list[str] = []
     valid: list[str] = []
@@ -1451,6 +1502,8 @@ def smart3w_job(job_id: str = "", cancel: bool = False) -> dict[str, object]:
     """
     if not isinstance(job_id, str):
         job_id = str(job_id)
+    if not isinstance(cancel, bool):
+        return {"success": False, "error": "cancel 必须是布尔值", "error_code": "INVALID_ARGUMENT"}
     job_id = job_id.strip()
     if not job_id:
         with JOBS_LOCK:
@@ -1532,6 +1585,11 @@ async def smart3w_interact(
     if content_format not in {"markdown", "html", "text"}:
         return {"success": False, "url": url, "error": "content_format 必须是 markdown/html/text",
                 "error_code": "INVALID_ARGUMENT"}
+    for name, value in (("return_cookies", return_cookies), ("respect_robots", respect_robots)):
+        bool_error = _bool_error(value, name)
+        if bool_error:
+            return {"success": False, "url": url, "error": bool_error,
+                    "error_code": "INVALID_ARGUMENT"}
     try:
         normalized_actions = normalize_actions(actions or [])
         profile = validate_profile(profile)
@@ -1576,7 +1634,8 @@ def smart3w_sitemap(url: str, max_urls: int = 50, recursive: bool = False) -> di
         dict: {success, output} 或 {success: False, error, error_code}
     """
     if not _is_int(max_urls) or max_urls < 1 or max_urls > 10000:
-        return {"success": False, "error": "max_urls 必须是 1-10000 的整数"}
+        return {"success": False, "error": "max_urls 必须是 1-10000 的整数",
+                "error_code": "INVALID_ARGUMENT"}
     if not isinstance(recursive, bool):
         return {"success": False, "error": "recursive 必须是布尔值", "error_code": "INVALID_ARGUMENT"}
     url = url.strip() if isinstance(url, str) else ""
@@ -1619,19 +1678,22 @@ def smart3w_doctor(check_search: bool = False) -> dict[str, object]:
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="smart3w-mcp", description="Smart3W MCP Server")
+    transport = (os.getenv("MCP_TRANSPORT") or "streamable-http").strip().lower()
     parser.add_argument(
         "--transport",
         choices=["stdio", "streamable-http"],
-        default=os.getenv("MCP_TRANSPORT", "streamable-http"),
+        default=transport,
     )
     parser.add_argument("--version", action="version", version=f"smart3w {__version__}")
     args = parser.parse_args(argv)
+    if args.transport not in ("stdio", "streamable-http"):
+        parser.error(f"无效的 MCP_TRANSPORT: {args.transport}（可选 stdio/streamable-http）")
     if args.transport == "streamable-http":
         mcp.run(
             transport="streamable-http",
             host=DEFAULT_HOST,
             port=DEFAULT_PORT,
-            streamable_http_path=os.getenv("MCP_PATH", "/mcp"),
+            streamable_http_path=(os.getenv("MCP_PATH") or "/mcp").strip() or "/mcp",
         )
     else:
         mcp.run(transport="stdio")
