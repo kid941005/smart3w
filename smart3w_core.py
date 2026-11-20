@@ -15,7 +15,7 @@ import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 
-from smart3w_url_utils import env_flag, normalize_url, url_policy_error
+from smart3w_url_utils import PolicyRedirectHandler, env_flag, normalize_url, url_policy_error
 
 DEFAULT_INSTANCE = "https://searxng.example.com:59826"
 SEARCH_TIMEOUT = 30
@@ -52,16 +52,8 @@ def _ssl_context():
     return ctx
 
 
-class _SitemapRedirectHandler(urllib.request.HTTPRedirectHandler):
-    """在 urllib 跟随重定向前校验下一跳，避免先请求内网再拦截。"""
-
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        blocked = url_policy_error(newurl)
-        if blocked:
-            raise urllib.error.HTTPError(
-                newurl, 403, f"重定向目标被拦截: {blocked}", headers, fp
-            )
-        return super().redirect_request(req, fp, code, msg, headers, newurl)
+class _SitemapRedirectHandler(PolicyRedirectHandler):
+    """Sitemap 专用重定向处理器；策略实现统一复用 PolicyRedirectHandler。"""
 
 
 def _open_sitemap(req):

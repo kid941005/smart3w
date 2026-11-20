@@ -82,8 +82,13 @@ def detect_kind(path: str | Path, content_type: str = "", url: str = "") -> str 
     source = Path(path)
     try:
         with source.open("rb") as handle:
-            head = handle.read(8)
+            head = handle.read(512)
     except OSError:
+        return None
+
+    # HTML 不能被 Content-Type/扩展名误判为 PDF 等文档；先排除明显 HTML 文档
+    probe = head.lstrip(b"\xef\xbb\xbf \t\r\n").lower()
+    if probe.startswith(b"<!doctype html") or probe.startswith(b"<html"):
         return None
 
     if head.startswith(b"%PDF"):

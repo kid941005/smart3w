@@ -88,7 +88,7 @@ def test_robots_server_error_disallows(monkeypatch):
         raise urllib.error.HTTPError("https://example.com/robots.txt", 500, "boom", {}, None)
 
     checker = RobotsChecker()
-    monkeypatch.setattr(urllib.request, "urlopen", raise_500)
+    monkeypatch.setattr(checker._opener, "open", raise_500)
     assert checker.allows("https://example.com/anything") is False
 
 
@@ -314,8 +314,8 @@ def test_robots_handles_utf8_bom(monkeypatch):
         def __exit__(self, *args):
             return False
 
-    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: FakeResponse())
     checker = RobotsChecker(ttl=1000)
+    monkeypatch.setattr(checker._opener, "open", lambda *a, **k: FakeResponse())
     assert checker.allows("https://example.com/private/x") is False
 
 
@@ -341,3 +341,20 @@ def test_robots_loader_does_not_block_other_origins(monkeypatch):
 
     release.set()
     worker.join(2)
+
+
+def test_policy_redirect_handler_blocks_private_redirect():
+    import urllib.error
+
+    from smart3w_url_utils import PolicyRedirectHandler
+
+    handler = PolicyRedirectHandler()
+    req = urllib.request.Request("https://example.com/robots.txt")
+    try:
+        handler.redirect_request(
+            req, None, 302, "Found", {}, "http://127.0.0.1/robots.txt"
+        )
+    except urllib.error.HTTPError as exc:
+        assert exc.code == 403
+    else:
+        raise AssertionError("重定向到内网地址应被拦截")

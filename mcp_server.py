@@ -48,7 +48,7 @@ from smart3w_interact import (
 )
 from smart3w_url_utils import normalize_url, ssrf_blocked, url_policy_error
 
-__version__ = "2.7.2"
+__version__ = "2.7.3"
 
 SERVER_DIR = Path(__file__).resolve().parent
 FETCH_SH = SERVER_DIR / "scripts" / "fetch.sh"
@@ -334,6 +334,7 @@ def _do_fetch_file(
     timeout: int,
     respect_robots: bool = False,
     cancel_event: threading.Event | None = None,
+    accept_html: bool = False,
 ) -> dict:
     """真正调用 fetch.sh 抓取一个 URL，返回包含完整正文的结构化结果。"""
     if cancel_event is not None and cancel_event.is_set():
@@ -350,6 +351,8 @@ def _do_fetch_file(
         ]
         if not compress:
             args.append("--no-compress")
+        if accept_html:
+            args.append("--accept-html")
 
         run_kwargs: dict[str, object] = {"respect_robots": respect_robots}
         if cancel_event is not None:
@@ -446,12 +449,19 @@ def _run_fetch_file(
     query: str = "",
     max_tokens: int = 0,
     cancel_event: threading.Event | None = None,
+    accept_html: bool | None = None,
 ) -> dict:
-    """抓取一个 URL：检查 robots.txt、按域名限速、查缓存，最后返回窗口切片结果。"""
+    """抓取一个 URL：检查 robots.txt、按域名限速、查缓存，最后返回窗口切片结果。
+
+    accept_html=None 时按 compress 推导：不压缩（原始内容）需要 HTML，
+    压缩为 Markdown 时允许服务端内容协商返回 Markdown。
+    """
     if cancel_event is not None and cancel_event.is_set():
         raise FetchCancelledError("抓取已取消")
     if respect_robots is None:
         respect_robots = DEFAULT_RESPECT_ROBOTS
+    if accept_html is None:
+        accept_html = not compress
 
     # robots 检查必须先于缓存：否则 robots 关闭时写入的缓存会绕过后续的 robots 开启请求
     if respect_robots and not ROBOTS_CHECKER.allows(url):
@@ -466,7 +476,7 @@ def _run_fetch_file(
     if cancel_event is not None and cancel_event.is_set():
         raise FetchCancelledError("抓取已取消")
 
-    cache_key = (normalize_url(url), mode, compress)
+    cache_key = (normalize_url(url), mode, compress, accept_html)
     result = None
     if use_cache and max_age_seconds != 0:
         cached_entry = FETCH_CACHE.get_with_age(cache_key)
@@ -489,6 +499,7 @@ def _run_fetch_file(
                 url, mode, compress, timeout,
                 respect_robots=respect_robots,
                 cancel_event=cancel_event,
+                accept_html=accept_html,
             )
         except FetchCancelledError:
             raise
@@ -552,6 +563,10 @@ JOBS_LOCK = threading.Lock()
 JOB_MAX_KEEP = 50
 
 
+class JobLimitError(RuntimeError):
+    """后台任务数量达到上限；调用方应提示稍后重试。"""
+
+
 def _job_view(job: dict) -> dict:
     """返回可序列化的任务快照，不暴露内部锁/线程对象。"""
     return {
@@ -576,15 +591,16 @@ def _new_job() -> dict:
         "cancel_event": threading.Event(),
     }
     with JOBS_LOCK:
+        # 控制内存：先按登记顺序淘汰已完成任务，再判断是否仍达到上限
+        finished = [
+            key for key, value in JOBS.items()
+            if value.get("status") in ("completed", "failed", "cancelled")
+        ]
+        while len(JOBS) >= JOB_MAX_KEEP and finished:
+            JOBS.pop(finished.pop(0), None)
+        if len(JOBS) >= JOB_MAX_KEEP:
+            raise JobLimitError(f"后台任务数量已达上限 {JOB_MAX_KEEP}，请稍后重试")
         JOBS[job["job_id"]] = job
-        # 控制内存：超过上限时移除最早完成的旧任务
-        if len(JOBS) > JOB_MAX_KEEP:
-            finished = [
-                key for key, value in JOBS.items()
-                if value.get("status") in ("completed", "failed", "cancelled")
-            ]
-            for key in finished[: len(JOBS) - JOB_MAX_KEEP]:
-                JOBS.pop(key, None)
     return job
 
 
@@ -598,6 +614,11 @@ def _run_job(job: dict, target, *args, **kwargs) -> None:
         with JOBS_LOCK:
             job["status"] = "cancelled" if job.get("cancel_requested") else "completed"
             job["result"] = result
+            job["finished_at"] = time.time()
+    except FetchCancelledError as exc:
+        with JOBS_LOCK:
+            job["status"] = "cancelled"
+            job["error"] = str(exc)
             job["finished_at"] = time.time()
     except Exception as exc:
         with JOBS_LOCK:
@@ -880,17 +901,31 @@ def smart3w_map(
     seen: set[str] = set()
     source_counts: dict[str, int] = {}
     sitemap_errors: list[str] = []
-    host_policy: dict[str, str | None] = {}
+    policy_cache: dict[tuple[str, str], str | None] = {}
     truncated = False
 
     def _policy_error(candidate: str) -> str | None:
+        """按 (scheme, netloc) 缓存策略结果，但先做完整 URL 形状校验。
+
+        不能只按 hostname 缓存：同一域名下不同端口、userinfo 或 scheme
+        的候选 URL 可能违反策略，复用一个 None 会绕过逐 URL 校验。
+        """
         try:
-            host = (urlsplit(candidate).hostname or "").strip().lower()
-        except ValueError:
-            return "URL 格式无效"
-        if host not in host_policy:
-            host_policy[host] = _validate_http_url(candidate)
-        return host_policy[host]
+            parsed = urlsplit(candidate)
+            _ = parsed.port  # 触发非法端口校验
+        except ValueError as exc:
+            return f"URL 格式无效: {exc}"
+        if (
+            parsed.scheme.lower() not in ("http", "https")
+            or not parsed.netloc
+            or parsed.username
+            or parsed.password
+        ):
+            return "仅支持 http/https URL，且不允许用户名/密码"
+        key = (parsed.scheme.lower(), parsed.netloc.lower())
+        if key not in policy_cache:
+            policy_cache[key] = _validate_http_url(candidate)
+        return policy_cache[key]
 
     def _add(candidate: str, source: str) -> None:
         nonlocal truncated
@@ -1174,12 +1209,11 @@ def smart3w_crawl(
             return {"success": False, "seed_url": seed, "error": seed_error,
                     "error_code": "INVALID_ARGUMENT"}
         depth = 1 if max_depth == 0 else max_depth
-        if not _is_int(depth) or depth < 1 or depth > 5:
-            return {"success": False, "error": "max_depth 必须是 1-5 的整数"}
-        if not _is_int(max_pages) or max_pages < 1 or max_pages > 500:
-            return {"success": False, "error": "max_pages 必须是 1-500 的整数"}
         if run_async:
-            job = _new_job()
+            try:
+                job = _new_job()
+            except JobLimitError as exc:
+                return {"success": False, "error": str(exc), "error_code": "JOB_LIMIT"}
             thread = threading.Thread(
                 target=_run_job,
                 args=(
@@ -1204,24 +1238,28 @@ def smart3w_crawl(
         return {"success": False, "error": "urls 必须是 1-100 个 URL，或提供 seed_url"}
 
     invalid: list[str] = []
+    valid: list[str] = []
     unique: list[str] = []
     seen: set[str] = set()
     for raw_url in url_list:
-        if not isinstance(raw_url, str) or _validate_http_url(raw_url):
-            invalid.append(raw_url if isinstance(raw_url, str) else repr(raw_url))
+        if not isinstance(raw_url, str):
+            invalid.append(repr(raw_url))
             continue
         url = raw_url.strip()
+        if _validate_http_url(url):
+            invalid.append(raw_url)
+            continue
+        valid.append(url)
         key = normalize_url(url)
         if key in seen:
             continue
         seen.add(key)
         unique.append(url)
 
-    valid_count = len(url_list) - len(invalid)
     base = {
         "requested": len(url_list),
         "unique": len(unique),
-        "duplicates_skipped": max(0, valid_count - len(unique)),
+        "duplicates_skipped": max(0, len(valid) - len(unique)),
         "invalid_count": len(invalid),
         "mode": mode,
     }
@@ -1230,7 +1268,7 @@ def smart3w_crawl(
     if not unique:
         return {
             **base, "success": False, "succeeded": 0, "failed": 0, "results": [],
-            "error": "没有可抓取的合法 URL",
+            "error": "没有可抓取的合法 URL", "error_code": "INVALID_ARGUMENT",
         }
 
     def _crawl_one(url: str) -> dict:
@@ -1278,6 +1316,7 @@ def smart3w_crawl(
     }
     if succeeded == 0:
         out["error"] = "所有 URL 抓取失败"
+        out["error_code"] = "CRAWL_FAILED"
     return out
 
 
@@ -1321,13 +1360,18 @@ def smart3w_extract(
         return {"success": False, "error": "concurrency 必须是 1-8 的整数", "error_code": "INVALID_ARGUMENT"}
 
     invalid: list[str] = []
+    valid: list[str] = []
     unique: list[str] = []
     seen: set[str] = set()
     for raw_url in urls:
-        if not isinstance(raw_url, str) or _validate_http_url(raw_url):
-            invalid.append(raw_url if isinstance(raw_url, str) else repr(raw_url))
+        if not isinstance(raw_url, str):
+            invalid.append(repr(raw_url))
             continue
         url = raw_url.strip()
+        if _validate_http_url(url):
+            invalid.append(raw_url)
+            continue
+        valid.append(url)
         key = normalize_url(url)
         if key in seen:
             continue
@@ -1385,7 +1429,7 @@ def smart3w_extract(
         "success": succeeded > 0,
         "requested": len(urls),
         "unique": len(unique),
-        "duplicates_skipped": max(0, len(urls) - len(invalid) - len(unique)),
+        "duplicates_skipped": max(0, len(valid) - len(unique)),
         "invalid_count": len(invalid),
         "succeeded": succeeded,
         "failed": len(results) - succeeded,
@@ -1395,6 +1439,7 @@ def smart3w_extract(
         out["invalid"] = invalid
     if succeeded == 0:
         out["error"] = "所有 URL 抽取失败"
+        out["error_code"] = "EXTRACT_FAILED"
     return out
 
 
@@ -1537,6 +1582,8 @@ def smart3w_sitemap(url: str, max_urls: int = 50, recursive: bool = False) -> di
     """
     if not _is_int(max_urls) or max_urls < 1 or max_urls > 10000:
         return {"success": False, "error": "max_urls 必须是 1-10000 的整数"}
+    if not isinstance(recursive, bool):
+        return {"success": False, "error": "recursive 必须是布尔值", "error_code": "INVALID_ARGUMENT"}
     url = url.strip() if isinstance(url, str) else ""
     url_error = _validate_http_url(url)
     if url_error:
@@ -1557,6 +1604,9 @@ def smart3w_doctor(check_search: bool = False) -> dict[str, object]:
     Returns:
         dict: {success, output} 或 {success: False, error}
     """
+    if not isinstance(check_search, bool):
+        return {"success": False, "error": "check_search 必须是布尔值",
+                "error_code": "INVALID_ARGUMENT"}
     args = ["doctor"]
     if check_search:
         args.append("--check-search")

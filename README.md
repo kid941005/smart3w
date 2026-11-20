@@ -2,7 +2,7 @@
 
 [![OpenClaw](https://img.shields.io/badge/OpenClaw-Compatible-green)](https://github.com/openclaw/openclaw)
 [![MIT](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-2.7.2-blue)](https://github.com/kid941005/smart3w/releases)
+[![Version](https://img.shields.io/badge/Version-2.7.3-blue)](https://github.com/kid941005/smart3w/releases)
 
 集 **SearXNG 网页搜索**、**Sitemap 解析** 与 **智能网页抓取** 于一体。
 
@@ -477,7 +477,7 @@ smart3w/
 ├── smart3w_fetch_utils.py  # 抓取治理：TTL 缓存 / robots / 限速
 ├── smart3w_url_utils.py    # 公共 URL 工具：规范化 / 追踪参数 / SSRF 检查
 ├── .github/workflows/      # CI（lint + 测试 + 打包）与 Docker 发布
-├── tests/                  # 单元测试（pytest，151 例）
+├── tests/                  # 单元测试（pytest，164 例）
 └── scripts/
     ├── fetch.sh            # 统一入口脚本（搜索 / 抓取 / Sitemap）
     ├── document_extract.py # 文档解析 CLI（PDF / Office → Markdown）
@@ -507,6 +507,18 @@ Python HTTP/curl/scrapling 策略降级，`smart3w_interact` 使用 Playwright �
 ---
 
 ## 📝 更新日志
+
+### 2.7.3
+
+- **安全（SSRF）**：`smart3w_map` 与 `smart3w_interact` 的逐跳策略缓存从 hostname 改为 `(scheme, netloc)`，并在缓存前完整校验端口、userinfo 与协议，避免同一主机上的非法 URL 复用已通过的校验结果
+- **安全（重定向）**：robots.txt 加载改用 `PolicyRedirectHandler`，每次重定向先做 SSRF/主机白名单校验；Sitemap 重定向处理复用同一基类
+- **修复（crawl/extract）**：先 `strip()` 再校验 URL，避免带首尾空格的合法 URL 被误判为非法；重复计数只统计有效 URL
+- **修复（任务状态）**：`FetchCancelledError` 现在记为 `cancelled` 而不是 `failed`；任务表增加上限（保留 50 个），超出返回 `JOB_LIMIT`
+- **修复（内容协商）**：`compress=false`、链接发现与结构化抽取请求 HTML，避免站点返回 Markdown 导致选择器失效；`compress=true` 仍允许 Markdown
+- **修复（文档识别）**：HTML 响应不再因 Content-Type/扩展名被误判为 PDF
+- **修复（交互）**：macOS 滚动改用 `Meta+ArrowUp/Down`；移除 `_require_text` 冗余返回
+- **修复（参数/错误码）**：`sitemap(recursive)` 与 `doctor(check_search)` 增加布尔校验；crawl/extract 全部失败时返回 `CRAWL_FAILED` / `EXTRACT_FAILED`
+- **测试/模块**：新增 13 个回归测试，共 164 例通过
 
 ### 2.7.2
 

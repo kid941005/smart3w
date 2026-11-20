@@ -236,3 +236,47 @@ def test_mcp_interact_validates_and_rejects(monkeypatch):
     monkeypatch.setattr(mcp_server, "ROBOTS_CHECKER", type("R", (), {"allows": lambda self, url: False})())
     result = asyncio.run(mcp_server.smart3w_interact("https://example.com/"))
     assert result["error_code"] == "ROBOTS_DENIED"
+
+
+def test_request_guard_caches_by_origin_not_host(monkeypatch):
+    calls = []
+
+    def fake_policy(url):
+        calls.append(url)
+        return "blocked" if ":8443" in url else None
+
+    class Route:
+        def __init__(self, url):
+            self.request = type("Request", (), {"url": url})()
+            self.result = ""
+
+        def continue_(self):
+            self.result = "continue"
+
+        def abort(self, reason):
+            self.result = f"abort:{reason}"
+
+    class Page:
+        def route(self, pattern, handler):
+            self.handler = handler
+
+    monkeypatch.setattr(interact, "url_policy_error", fake_policy)
+    page = Page()
+    errors = []
+    interact._install_request_guard(page, errors)
+
+    allowed = Route("https://example.com/a")
+    page.handler(allowed)
+    blocked = Route("https://example.com:8443/b")
+    page.handler(blocked)
+
+    assert allowed.result == "continue"
+    assert blocked.result.startswith("abort:")
+    assert calls == ["https://example.com/a", "https://example.com:8443/b"]
+
+
+def test_scroll_uses_platform_specific_keys(monkeypatch):
+    monkeypatch.setattr(interact.sys, "platform", "darwin")
+    page = FakePage()
+    interact._execute_actions(page, [{"type": "scroll", "to": "bottom", "wait_ms": 0}], 0)
+    assert ("keyboard", "Meta+ArrowDown") in page.calls

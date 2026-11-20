@@ -9,7 +9,9 @@ from __future__ import annotations
 import ipaddress
 import os
 import socket
+import urllib.error
 import urllib.parse
+import urllib.request
 
 TRACKING_PARAMS = frozenset({
     "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content",
@@ -296,6 +298,22 @@ def url_policy_error(url: str, max_length: int = 8192) -> str | None:
     if parsed.username or parsed.password:
         return "URL 不允许包含用户名/密码"
     return ssrf_blocked(raw)
+
+
+class PolicyRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """在 urllib 跟随重定向前校验下一跳，避免先请求内网再拦截。
+
+    供 robots.txt、sitemap 等所有基于 urllib 的抓取路径复用，确保
+    重定向目标同样经过 scheme/userinfo/端口/SSRF 策略校验。
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        blocked = url_policy_error(newurl)
+        if blocked:
+            raise urllib.error.HTTPError(
+                newurl, 403, f"重定向目标被拦截: {blocked}", headers, fp
+            )
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
 def normalize_url(url: str) -> str:

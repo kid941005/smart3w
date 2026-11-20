@@ -37,6 +37,7 @@ REMOTE_ARGS=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --no-compress) COMPRESS=0; shift ;;
+        --accept-html) export SMART3W_ACCEPT_HTML=1; shift ;;
         --check-search) REMOTE_ARGS+=("$1"); shift ;;
         --ua|--user-agent)
             [[ $# -ge 2 ]] || { echo "--ua 需要一个参数" >&2; exit 1; }
@@ -852,6 +853,7 @@ case "$ACTION" in
         echo ""
         echo "参数:"
         echo "  --no-compress    跳过内容压缩，获取原始 HTML"
+        echo "  --accept-html    请求 HTML（而非 Markdown），用于链接发现/结构化抽取"
         echo "  --ua 'UA'        自定义 User-Agent"
         echo "  --timeout N      所有抓取模式的超时时间（秒）"
         echo "  --retry N        每个策略的最大尝试次数（正整数，默认 2；--attempts 为同义参数）"

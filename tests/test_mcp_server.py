@@ -158,6 +158,46 @@ def test_do_fetch_file_includes_effective_url(monkeypatch):
     assert result["content"] == "页面内容"
 
 
+def test_do_fetch_file_adds_accept_html_flag(monkeypatch):
+    captured = {}
+
+    def fake_run_fetch(args, timeout=mcp_server.DEFAULT_TIMEOUT, respect_robots=None):
+        captured["args"] = list(args)
+        Path(args[2]).write_text("<html><body><h1>Title</h1></body></html>", encoding="utf-8")
+        return "   方法: python-http\n"
+
+    monkeypatch.setattr(mcp_server, "_run_fetch", fake_run_fetch)
+    result = mcp_server._do_fetch_file(
+        "http://example.com/", "get", False, 30, accept_html=True
+    )
+
+    assert result["success"] is True
+    assert "--accept-html" in captured["args"]
+
+
+def test_run_fetch_file_requests_html_for_uncompressed_content(monkeypatch):
+    captured = {}
+
+    def fake_do_fetch(url, mode, compress, timeout, **kwargs):
+        captured["accept_html"] = kwargs.get("accept_html")
+        return {"success": True, "content": "<html></html>"}
+
+    monkeypatch.setattr(mcp_server, "_do_fetch_file", fake_do_fetch)
+    monkeypatch.setattr(mcp_server.RATE_LIMITER, "wait", lambda url: None)
+
+    mcp_server._run_fetch_file(
+        "https://example.com/", "get", False, 10, 0, 0,
+        use_cache=False, respect_robots=False,
+    )
+    assert captured["accept_html"] is True
+
+    mcp_server._run_fetch_file(
+        "https://example.com/", "get", True, 10, 0, 0,
+        use_cache=False, respect_robots=False,
+    )
+    assert captured["accept_html"] is False
+
+
 def test_fetch_timeout_returns_structured_error(monkeypatch):
     def fake_run(*args, **kwargs):
         raise subprocess.TimeoutExpired(cmd="fetch.sh", timeout=1)
@@ -495,3 +535,90 @@ def test_async_crawl_cancel_interrupts_inflight_fetch(monkeypatch):
     assert cancel_seen.is_set()
     assert job["status"] == "cancelled"
     assert time.monotonic() - started < 3
+
+
+def test_map_does_not_reuse_host_policy_for_invalid_port(monkeypatch):
+    monkeypatch.setattr(mcp_server, "_validate_http_url", lambda url: None)
+
+    def fake_fetch(url, *args, **kwargs):
+        body = (
+            '<a href="https://example.com/good">good</a>'
+            '<a href="https://example.com:99999/bad">bad</a>'
+        )
+        return {"success": True, "content": body, "effective_url": url}
+
+    monkeypatch.setattr(mcp_server, "_run_fetch_file", fake_fetch)
+    result = mcp_server.smart3w_map(
+        "https://example.com/", include_sitemap=False, include_homepage=True
+    )
+    urls = [item["url"] for item in result["urls"]]
+    assert "https://example.com/good" in urls
+    assert not any("99999" in url for url in urls)
+
+
+def test_new_job_rejects_when_registry_full_of_active_jobs(monkeypatch):
+    monkeypatch.setattr(mcp_server, "JOBS", {})
+    monkeypatch.setattr(mcp_server, "JOB_MAX_KEEP", 1)
+    job = mcp_server._new_job()
+    job["status"] = "running"
+    with pytest.raises(mcp_server.JobLimitError):
+        mcp_server._new_job()
+
+
+def test_new_job_evicts_finished_job(monkeypatch):
+    monkeypatch.setattr(mcp_server, "JOBS", {})
+    monkeypatch.setattr(mcp_server, "JOB_MAX_KEEP", 1)
+    first = mcp_server._new_job()
+    first["status"] = "completed"
+    second = mcp_server._new_job()
+    assert second["job_id"] in mcp_server.JOBS
+    assert first["job_id"] not in mcp_server.JOBS
+
+
+def test_run_job_marks_fetch_cancelled_as_cancelled(monkeypatch):
+    monkeypatch.setattr(mcp_server, "JOBS", {})
+    job = mcp_server._new_job()
+
+    def cancel_target():
+        raise mcp_server.FetchCancelledError("抓取已取消")
+
+    mcp_server._run_job(job, cancel_target)
+    assert job["status"] == "cancelled"
+    assert job["error"] == "抓取已取消"
+
+
+def test_crawl_strips_urls_before_validation(monkeypatch):
+    monkeypatch.setattr(mcp_server, "_validate_http_url", lambda url: None)
+    monkeypatch.setattr(
+        mcp_server,
+        "_run_fetch_file",
+        lambda url, *a, **k: {"success": True, "content": "", "effective_url": url},
+    )
+    result = mcp_server.smart3w_crawl(
+        urls=[" https://example.com/ ", "https://example.com/two "], max_depth=0
+    )
+    assert result["success"] is True
+    assert result["invalid_count"] == 0
+    assert result["unique"] == 2
+
+
+def test_extract_strips_urls_before_validation(monkeypatch):
+    monkeypatch.setattr(mcp_server, "_validate_http_url", lambda url: None)
+    monkeypatch.setattr(
+        mcp_server,
+        "_run_fetch_file",
+        lambda url, *a, **k: {
+            "success": True, "content": "<h1>Hello</h1>", "effective_url": url,
+        },
+    )
+    result = mcp_server.smart3w_extract([" https://example.com/ "], {"title": "h1"})
+    assert result["success"] is True
+    assert result["invalid_count"] == 0
+    assert result["results"][0]["data"]["title"] == "Hello"
+
+
+def test_sitemap_and_doctor_reject_non_boolean_options():
+    sitemap = mcp_server.smart3w_sitemap("https://example.com/sitemap.xml", recursive="yes")
+    assert sitemap["error_code"] == "INVALID_ARGUMENT"
+    doctor = mcp_server.smart3w_doctor(check_search="yes")
+    assert doctor["error_code"] == "INVALID_ARGUMENT"

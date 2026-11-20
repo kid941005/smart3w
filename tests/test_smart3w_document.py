@@ -119,3 +119,10 @@ def test_empty_pdf_reports_ocr_hint(tmp_path):
 
     with pytest.raises(DocumentError, match="OCR"):
         extract_document_file(path)
+
+
+def test_detect_kind_does_not_treat_html_as_document(tmp_path):
+    path = tmp_path / "article"
+    path.write_bytes(b"<!doctype html>\n<html><body>hi</body></html>")
+    assert detect_kind(path, content_type="application/pdf") is None
+    assert detect_kind(path, url="https://example.com/article.pdf") is None

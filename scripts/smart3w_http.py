@@ -36,6 +36,7 @@ DEFAULT_USER_AGENT = (
     "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 )
 MARKDOWN_ACCEPT = "text/markdown, text/html;q=0.9, */*;q=0.8"
+HTML_ACCEPT = "text/html, application/xhtml+xml, */*;q=0.8"
 PROXY_ENV_VARS = (
     "HTTP_PROXY",
     "http_proxy",
@@ -147,7 +148,7 @@ def fetch_url(
     checker = RobotsChecker() if respect_robots and RobotsChecker is not None else None
     headers = {
         "User-Agent": user_agent,
-        "Accept": MARKDOWN_ACCEPT,
+        "Accept": HTML_ACCEPT if env_flag("SMART3W_ACCEPT_HTML", False) else MARKDOWN_ACCEPT,
         "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
         "Cache-Control": "no-cache",
     }

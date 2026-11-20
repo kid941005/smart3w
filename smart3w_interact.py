@@ -14,11 +14,12 @@ import json
 import os
 import re
 import shutil
+import sys
 import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from smart3w_url_utils import env_flag, proxy_url, ssrf_blocked
+from smart3w_url_utils import env_flag, proxy_url, ssrf_blocked, url_policy_error
 
 MAX_ACTIONS = 50
 MAX_ACTION_WAIT_MS = 10_000
@@ -69,7 +70,7 @@ def _require_text(value: object, name: str, *, allow_empty: bool = False, max_le
         raise InteractionError(f"{name} 不能为空", "INVALID_ARGUMENT")
     if len(text) > max_length:
         raise InteractionError(f"{name} 长度不能超过 {max_length}", "INVALID_ARGUMENT")
-    return text if allow_empty else text
+    return text
 
 
 def normalize_actions(actions: object) -> list[dict[str, object]]:
@@ -348,7 +349,7 @@ def _launch_browser(playwright):
 
 def _install_request_guard(page, blocked_errors: list[str]):
     """所有浏览器请求都过 SSRF/allowlist；非 http(s) 资源放行。"""
-    host_cache: dict[str, str | None] = {}
+    policy_cache: dict[tuple[str, str], str | None] = {}
 
     def guard(route):
         request = route.request
@@ -356,13 +357,16 @@ def _install_request_guard(page, blocked_errors: list[str]):
         if not url.lower().startswith(("http://", "https://")):
             return route.continue_()
         try:
-            host = (urlsplit(url).hostname or "").strip().lower()
+            parsed = urlsplit(url)
+            _ = parsed.port  # 触发非法端口校验
         except ValueError:
             blocked_errors.append(url)
             return route.abort("blockedbyclient")
-        if host not in host_cache:
-            host_cache[host] = ssrf_blocked(url)
-        blocked = host_cache[host]
+        # 不能只按 hostname 缓存：同 host 不同端口/凭据的请求策略可能不同
+        key = (parsed.scheme.lower(), parsed.netloc.lower())
+        if key not in policy_cache:
+            policy_cache[key] = url_policy_error(url)
+        blocked = policy_cache[key]
         if blocked:
             if len(blocked_errors) < 20:
                 blocked_errors.append(f"{url}: {blocked}")
@@ -408,10 +412,12 @@ def _execute_actions(page, actions: list[dict[str, object]], default_wait_ms: in
                 page.wait_for_load_state(str(action.get("state", "load")), timeout=timeout)
             elif kind == "scroll":
                 target = action.get("to")
+                home_key = "Meta+ArrowUp" if sys.platform == "darwin" else "Control+Home"
+                end_key = "Meta+ArrowDown" if sys.platform == "darwin" else "Control+End"
                 if target == "top":
-                    page.keyboard.press("Control+Home")
+                    page.keyboard.press(home_key)
                 elif target == "bottom":
-                    page.keyboard.press("Control+End")
+                    page.keyboard.press(end_key)
                 else:
                     page.mouse.wheel(0, int(action.get("y", 0)))
         except Exception as exc:

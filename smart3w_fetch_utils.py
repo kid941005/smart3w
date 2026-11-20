@@ -18,6 +18,7 @@ from collections import OrderedDict
 from smart3w_url_utils import (  # noqa: F401  # 向后兼容：继续从本模块导出
     PRIVATE_NETWORKS,
     TRACKING_PARAMS,
+    PolicyRedirectHandler,
     env_flag,
     is_private_ip,
     normalize_url,
@@ -25,7 +26,7 @@ from smart3w_url_utils import (  # noqa: F401  # 向后兼容：继续从本模�
     ssrf_blocked,
 )
 
-USER_AGENT = "Smart3W/2.7.2 (+https://github.com/kid941005/smart3w)"
+USER_AGENT = "Smart3W/2.7.3 (+https://github.com/kid941005/smart3w)"
 
 
 def _env_int(name: str, default: int) -> int:
@@ -119,6 +120,8 @@ class RobotsChecker:
         self.max_entries = max(1, int(max_entries))
         self._cache: dict[tuple[str, str], tuple[float, urllib.robotparser.RobotFileParser | None]] = {}
         self._lock = threading.Lock()
+        # 所有 robots.txt 请求（含重定向）都必须经过 URL 策略校验
+        self._opener = urllib.request.build_opener(PolicyRedirectHandler())
 
     def _load(self, scheme: str, origin: str) -> urllib.robotparser.RobotFileParser | None:
         """抓取并解析 robots.txt。
@@ -129,7 +132,7 @@ class RobotsChecker:
         url = f"{scheme}://{origin}/robots.txt"
         try:
             req = urllib.request.Request(url, headers={"User-Agent": self.user_agent})
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+            with self._opener.open(req, timeout=self.timeout) as resp:
                 # 兼容带 BOM 的 robots.txt（部分站点/Windows 编辑器会写入 UTF-8 BOM）
                 raw = resp.read().decode("utf-8-sig", errors="replace")
         except urllib.error.HTTPError as exc:
