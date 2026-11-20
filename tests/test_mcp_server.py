@@ -13,6 +13,36 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import mcp_server  # noqa: E402
 
 
+def test_server_uses_mcpserver_api():
+    from mcp.server import MCPServer
+
+    assert isinstance(mcp_server.mcp, MCPServer)
+
+
+def test_main_passes_streamable_http_options(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(mcp_server.mcp, "run", lambda **kwargs: captured.update(kwargs))
+    monkeypatch.setenv("MCP_PATH", "/custom-mcp")
+
+    mcp_server.main(["--transport", "streamable-http"])
+
+    assert captured == {
+        "transport": "streamable-http",
+        "host": mcp_server.DEFAULT_HOST,
+        "port": mcp_server.DEFAULT_PORT,
+        "streamable_http_path": "/custom-mcp",
+    }
+
+
+def test_main_uses_stdio_without_http_options(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(mcp_server.mcp, "run", lambda **kwargs: captured.update(kwargs))
+
+    mcp_server.main(["--transport", "stdio"])
+
+    assert captured == {"transport": "stdio"}
+
+
 def test_fetch_blocks_private_ip_without_subprocess(monkeypatch):
     calls = []
     monkeypatch.setattr(

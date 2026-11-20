@@ -5,6 +5,7 @@ annotated-types==0.8.0
 anyio==4.15.1
     # via
     #   httpx
+    #   httpx2
     #   mcp
     #   scrapling
     #   sse-starlette
@@ -68,19 +69,27 @@ greenlet==3.5.5
 h11==0.16.0
     # via
     #   httpcore
+    #   httpcore2
     #   uvicorn
 httpcore==1.0.9
     # via httpx
+httpcore2==2.14.0 ; python_full_version < '3.11' and sys_platform != 'emscripten'
+    # via httpx2
+httpcore2==2.16.2 ; python_full_version >= '3.11' and sys_platform != 'emscripten'
+    # via httpx2
 httpx==0.28.1
-    # via
-    #   mcp
-    #   smart3w
-httpx-sse==0.4.3
+    # via smart3w
+httpx2==2.14.0 ; python_full_version < '3.11'
     # via mcp
+httpx2==2.16.2 ; python_full_version >= '3.11'
+    # via mcp
+httpx2-jsfetch==1.0 ; python_full_version >= '3.12' and sys_platform == 'emscripten'
+    # via httpx2
 idna==3.19
     # via
     #   anyio
     #   httpx
+    #   httpx2
 ipython==8.39.0 ; python_full_version < '3.11'
     # via scrapling
 ipython==9.17.1 ; python_full_version >= '3.11'
@@ -108,14 +117,18 @@ markdownify==1.2.3
     # via scrapling
 matplotlib-inline==0.2.2
     # via ipython
-mcp==1.29.1
+mcp==2.3.0
     # via
     #   scrapling
     #   smart3w
+mcp-types==2.3.0
+    # via mcp
 msgspec==0.21.1
     # via scrapling
 openpyxl==3.1.5
     # via smart3w
+opentelemetry-api==1.45.2
+    # via mcp
 orjson==3.12.0
     # via scrapling
 parso==0.8.7
@@ -147,11 +160,9 @@ pycparser==3.0 ; implementation_name != 'PyPy'
 pydantic==2.13.5
     # via
     #   mcp
-    #   pydantic-settings
+    #   mcp-types
 pydantic-core==2.46.5
     # via pydantic
-pydantic-settings==2.15.0
-    # via mcp
 pyee==13.0.1
     # via
     #   patchright
@@ -166,8 +177,6 @@ pypdf==7.1.1
     # via smart3w
 python-docx==1.2.0
     # via smart3w
-python-dotenv==1.2.3
-    # via pydantic-settings
 python-multipart==0.0.32
     # via mcp
 python-pptx==1.0.2
@@ -210,14 +219,21 @@ traitlets==5.16.1
     # via
     #   ipython
     #   matplotlib-inline
+truststore==0.10.5 ; sys_platform != 'emscripten'
+    # via
+    #   httpcore2
+    #   httpx2
 typing-extensions==4.16.0
     # via
     #   anyio
     #   beautifulsoup4
     #   cryptography
     #   exceptiongroup
+    #   httpx2
     #   ipython
     #   mcp
+    #   mcp-types
+    #   opentelemetry-api
     #   pydantic
     #   pydantic-core
     #   pyee
@@ -234,7 +250,6 @@ typing-inspection==0.4.4
     # via
     #   mcp
     #   pydantic
-    #   pydantic-settings
 uvicorn==0.52.4 ; sys_platform != 'emscripten'
     # via mcp
 w3lib==2.4.1

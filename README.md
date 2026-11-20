@@ -2,7 +2,7 @@
 
 [![OpenClaw](https://img.shields.io/badge/OpenClaw-Compatible-green)](https://github.com/openclaw/openclaw)
 [![MIT](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-2.7.3-blue)](https://github.com/kid941005/smart3w/releases)
+[![Version](https://img.shields.io/badge/Version-2.8.0-blue)](https://github.com/kid941005/smart3w/releases)
 
 集 **SearXNG 网页搜索**、**Sitemap 解析** 与 **智能网页抓取** 于一体。
 
@@ -51,7 +51,7 @@ pip install -e .
 
 只安装运行依赖时：
 ```bash
-pip install "mcp>=1.6,<2" "scrapling[all]>=0.4.2" "playwright>=1.40" "readability-lxml>=0.8.0" beautifulsoup4 \
+pip install "mcp>=2.3.0,<3" "scrapling[all]>=0.4.2" "playwright>=1.40" "readability-lxml>=0.8.0" beautifulsoup4 \
   "pypdf>=4.0.0" "python-docx>=1.1.0" "openpyxl>=3.1.0" "python-pptx>=0.6.23"
 ```
 
@@ -468,7 +468,7 @@ smart3w/
 ├── requirements-dev.txt    # 开发依赖（测试 / lint）
 ├── Dockerfile              # Docker 镜像构建（MCP 服务）
 ├── docker-compose.yml      # Compose 部署示例
-├── mcp_server.py           # MCP 服务入口（FastMCP + Streamable HTTP）
+├── mcp_server.py           # MCP 服务入口（MCPServer + Streamable HTTP）
 ├── smart3w_core.py         # 搜索 / Sitemap / 正文渲染核心（MCP 与 CLI 共用）
 ├── smart3w_discovery.py    # 站点链接发现 / 路径过滤 / CSS-XPath 结构化抽取
 ├── smart3w_content.py      # 正文相关性筛选：按查询词选段、控制上下文预算
@@ -477,7 +477,7 @@ smart3w/
 ├── smart3w_fetch_utils.py  # 抓取治理：TTL 缓存 / robots / 限速
 ├── smart3w_url_utils.py    # 公共 URL 工具：规范化 / 追踪参数 / SSRF 检查
 ├── .github/workflows/      # CI（lint + 测试 + 打包）与 Docker 发布
-├── tests/                  # 单元测试（pytest，164 例）
+├── tests/                  # 单元测试（pytest，167 例）
 └── scripts/
     ├── fetch.sh            # 统一入口脚本（搜索 / 抓取 / Sitemap）
     ├── document_extract.py # 文档解析 CLI（PDF / Office → Markdown）
@@ -507,6 +507,12 @@ Python HTTP/curl/scrapling 策略降级，`smart3w_interact` 使用 Playwright �
 ---
 
 ## 📝 更新日志
+
+### 2.8.0
+
+- **平台升级**：MCP Python SDK 从 1.x 升级到 2.3，服务端从 `FastMCP` 迁移到 `MCPServer`（`from mcp.server import MCPServer`）；9 个工具的名称、参数与返回结构保持不变
+- **启动参数**：`host` / `port` / `streamable_http_path` 从构造函数移到 `mcp.run(transport="streamable-http", ...)`；stdio 模式行为不变
+- **依赖**：`mcp>=2.3.0,<3`（撤销 2.7.3 的 `<2` 上限），`uv.lock` 与 `requirements*.txt` 同步更新；新增 3 个迁移回归测试，共 167 例通过
 
 ### 2.7.3
 

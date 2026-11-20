@@ -18,7 +18,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server import MCPServer
 
 from smart3w_content import filter_content
 from smart3w_core import (
@@ -48,7 +48,7 @@ from smart3w_interact import (
 )
 from smart3w_url_utils import normalize_url, ssrf_blocked, url_policy_error
 
-__version__ = "2.7.3"
+__version__ = "2.8.0"
 
 SERVER_DIR = Path(__file__).resolve().parent
 FETCH_SH = SERVER_DIR / "scripts" / "fetch.sh"
@@ -81,12 +81,7 @@ SEARCH_CACHE = TTLCache()
 ROBOTS_CHECKER = RobotsChecker()
 RATE_LIMITER = DomainRateLimiter()
 
-mcp = FastMCP(
-    "smart3w",
-    host=DEFAULT_HOST,
-    port=DEFAULT_PORT,
-    streamable_http_path=os.getenv("MCP_PATH", "/mcp"),
-)
+mcp = MCPServer("smart3w", version=__version__)
 
 
 class FetchError(RuntimeError):
@@ -1631,7 +1626,15 @@ def main(argv: list[str] | None = None) -> None:
     )
     parser.add_argument("--version", action="version", version=f"smart3w {__version__}")
     args = parser.parse_args(argv)
-    mcp.run(transport=args.transport)
+    if args.transport == "streamable-http":
+        mcp.run(
+            transport="streamable-http",
+            host=DEFAULT_HOST,
+            port=DEFAULT_PORT,
+            streamable_http_path=os.getenv("MCP_PATH", "/mcp"),
+        )
+    else:
+        mcp.run(transport="stdio")
 
 
 if __name__ == "__main__":
