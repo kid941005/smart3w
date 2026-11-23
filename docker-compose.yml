@@ -30,6 +30,13 @@ services:
       # host 网络下实际监听端口，同时用于健康检查
       SMART3W_PORT: ${SMART3W_PORT:-50826}
       SMART3W_TIMEOUT: ${SMART3W_TIMEOUT:-30}
+      # 资源上限（默认值见 README 环境变量表；一般无需修改）
+      SMART3W_MAX_DOCUMENT_BYTES: ${SMART3W_MAX_DOCUMENT_BYTES:-52428800}
+      SMART3W_MAX_FETCH_SECONDS: ${SMART3W_MAX_FETCH_SECONDS:-110}
+      SMART3W_MAX_SUBPROCESS_OUTPUT_BYTES: ${SMART3W_MAX_SUBPROCESS_OUTPUT_BYTES:-4194304}
+      SMART3W_INTERACT_MAX_SECONDS: ${SMART3W_INTERACT_MAX_SECONDS:-300}
+      SMART3W_DNS_TIMEOUT: ${SMART3W_DNS_TIMEOUT:-5}
+      SMART3W_ALLOW_SERVICE_WORKERS: ${SMART3W_ALLOW_SERVICE_WORKERS:-0}
       # smart3w_interact 保存登录 Cookie / localStorage 的目录（容器内路径）
       SMART3W_PROFILE_DIR: ${SMART3W_PROFILE_DIR:-/data/profiles}
       # fetch / stealthy 使用的 Chrome 路径
@@ -38,13 +45,17 @@ services:
       SMART3W_CHROME_PATH: ${SMART3W_CHROME_PATH:-/opt/google/chrome/chrome}
       # 1=后台无界面运行；0=显示浏览器窗口。容器部署一般用 1
       SMART3W_BROWSER_HEADLESS: ${SMART3W_BROWSER_HEADLESS:-1}
-      # 1=关闭 Chrome 沙箱；普通部署保持 0（root 容器会自动启用）
+      # 1=关闭 Chrome 沙箱；普通部署保持 0。若容器内核限制 Chrome 沙箱
+      # （常见于部分 Docker/Seccomp 配置）导致 smart3w_interact 启动失败，再设为 1。
       SMART3W_BROWSER_NO_SANDBOX: ${SMART3W_BROWSER_NO_SANDBOX:-0}
     volumes:
-      # 登录状态保存到当前目录下的 smart3w_profiles/，删容器/重建后仍在
+      # 登录状态保存到当前目录下的 smart3w_profiles/，删容器/重建后仍在。
+      # 容器以 uid 10001 运行，宿主机目录需可写：
+      #   sudo chown -R 10001:10001 ./smart3w_profiles
       - ./smart3w_profiles:/data/profiles
     healthcheck:
-      test: ["CMD", "python3", "-c", "import socket,os; socket.create_connection(('127.0.0.1', int(os.environ.get('SMART3W_PORT','50826'))), 3).close()"]
+      # SMART3W_HOST=0.0.0.0/:: 时本机回环探测 127.0.0.1；绑定具体地址时探测该地址
+      test: ["CMD", "python3", "-c", "import socket,os; h=os.environ.get('SMART3W_HOST','0.0.0.0'); h='127.0.0.1' if h in ('0.0.0.0','::','') else h; socket.create_connection((h, int(os.environ.get('SMART3W_PORT','50826'))), 3).close()"]
       interval: 30s
       timeout: 5s
       start_period: 15s

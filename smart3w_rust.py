@@ -17,7 +17,28 @@ import subprocess
 from pathlib import Path
 
 _DEFAULT_TIMEOUT = 90.0
+_DEFAULT_MAX_BYTES = 64 * 1024 * 1024
 _BINARY_CACHE: dict[str, str | None] = {}
+
+
+def _max_bytes() -> int:
+    """单次输入/输出上限；非正整数回退 64MB，避免超大文档撑爆子进程管道。"""
+    raw = os.environ.get("SMART3W_MAX_DOCUMENT_BYTES")
+    if raw is None:
+        return _DEFAULT_MAX_BYTES
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return _DEFAULT_MAX_BYTES
+    return value if value > 0 else _DEFAULT_MAX_BYTES
+
+
+def _meta_int(value: object) -> int:
+    """把 Rust meta 中的数字宽容地转成 int；非法值按 0 处理。"""
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0
 
 
 def _mode() -> str:
@@ -71,6 +92,9 @@ def _invoke(command: str, payload: bytes, timeout: float = _DEFAULT_TIMEOUT) -> 
     exe = binary_path()
     if not exe:
         return None
+    limit = _max_bytes()
+    if len(payload) > limit:
+        return None
     try:
         proc = subprocess.run(
             [exe, command],
@@ -82,6 +106,8 @@ def _invoke(command: str, payload: bytes, timeout: float = _DEFAULT_TIMEOUT) -> 
     except (OSError, subprocess.SubprocessError):
         return None
     if proc.returncode != 0:
+        return None
+    if len(proc.stdout) > limit:
         return None
     try:
         data = json.loads(proc.stdout.decode("utf-8", "replace"))
@@ -117,7 +143,7 @@ def pdf_to_markdown(pdf_bytes: bytes) -> tuple[str, int] | None:
     if not markdown or payload is None:
         return None
     meta = payload.get("meta") or {}
-    return markdown, int(meta.get("pages") or 0)
+    return markdown, _meta_int(meta.get("pages"))
 
 
 def xlsx_to_markdown(xlsx_bytes: bytes) -> tuple[str, list[str]] | None:
@@ -136,7 +162,7 @@ def csv_to_markdown(csv_bytes: bytes) -> tuple[str, int] | None:
     if not markdown or payload is None:
         return None
     meta = payload.get("meta") or {}
-    return markdown, int(meta.get("rows") or 0)
+    return markdown, _meta_int(meta.get("rows"))
 
 
 def doctor() -> dict:

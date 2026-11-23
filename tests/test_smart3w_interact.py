@@ -1,5 +1,6 @@
 import asyncio
 import sys
+import time
 
 import pytest
 
@@ -280,3 +281,20 @@ def test_scroll_uses_platform_specific_keys(monkeypatch):
     page = FakePage()
     interact._execute_actions(page, [{"type": "scroll", "to": "bottom", "wait_ms": 0}], 0)
     assert ("keyboard", "Meta+ArrowDown") in page.calls
+
+
+def test_interact_max_seconds_reads_env(monkeypatch):
+    monkeypatch.setenv("SMART3W_INTERACT_MAX_SECONDS", "42")
+    assert interact._max_interact_seconds() == 42
+    monkeypatch.setenv("SMART3W_INTERACT_MAX_SECONDS", "abc")
+    assert interact._max_interact_seconds() == interact.DEFAULT_INTERACT_MAX_SECONDS
+    monkeypatch.setenv("SMART3W_INTERACT_MAX_SECONDS", "1")
+    assert interact._max_interact_seconds() == 10
+
+
+def test_execute_actions_rejects_expired_deadline():
+    with pytest.raises(interact.InteractionError) as exc:
+        interact._execute_actions(
+            FakePage(), [{"type": "wait", "ms": 1}], 0, deadline=time.monotonic() - 1
+        )
+    assert exc.value.code == "INTERACTION_TIMEOUT"

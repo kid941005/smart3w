@@ -19,6 +19,9 @@ FROM python:3.12-slim-bookworm
 #              --build-arg SMART3W_BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ) .
 ARG SMART3W_BUILD_COMMIT=unknown
 ARG SMART3W_BUILD_TIME=unknown
+# 非 root 运行用户（可用 build-arg 覆盖以对齐宿主机挂载目录属主）
+ARG SMART3W_UID=10001
+ARG SMART3W_GID=10001
 
 ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
@@ -48,6 +51,10 @@ RUN curl -fsSL https://dl.google.com/linux/linux_signing_key.pub \
     google-chrome-stable \
     && rm -rf /var/lib/apt/lists/*
 
+# 创建非 root 用户；Chrome 默认沙箱依赖此用户而非 root
+RUN groupadd --gid "${SMART3W_GID}" smart3w \
+    && useradd --uid "${SMART3W_UID}" --gid smart3w --create-home --shell /usr/sbin/nologin smart3w
+
 # --------------------------------------------------------------------------
 # Install Python dependencies
 # --------------------------------------------------------------------------
@@ -65,7 +72,9 @@ COPY mcp_server.py smart3w_content.py smart3w_core.py smart3w_discovery.py smart
 # 从构建阶段复制 Rust 二进制
 COPY --from=rustbuild /build/rust/target/release/smart3w-rs /usr/local/bin/smart3w-rs
 
-RUN chmod +x scripts/fetch.sh && pip install --no-cache-dir --no-deps .
+RUN chmod +x scripts/fetch.sh && pip install --no-cache-dir --no-deps . \
+    && mkdir -p /data/profiles \
+    && chown -R smart3w:smart3w /app /data/profiles
 
 # --------------------------------------------------------------------------
 # Runtime
@@ -76,11 +85,14 @@ ENV SMART3W_PORT=50826
 ENV SMART3W_TIMEOUT=30
 ENV SMART3W_RS_BIN=/usr/local/bin/smart3w-rs
 ENV SMART3W_BUILD_COMMIT=${SMART3W_BUILD_COMMIT} \
-    SMART3W_BUILD_TIME=${SMART3W_BUILD_TIME}
+    SMART3W_BUILD_TIME=${SMART3W_BUILD_TIME} \
+    HOME=/home/smart3w
 
 EXPOSE 50826
+
+USER smart3w
 
 CMD ["smart3w-mcp"]
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-    CMD python3 -c "import socket,os; socket.create_connection(('127.0.0.1', int(os.environ.get('SMART3W_PORT','50826'))), 3).close()" || exit 1
+    CMD python3 -c "import socket,os; h=os.environ.get('SMART3W_HOST','0.0.0.0'); h='127.0.0.1' if h in ('0.0.0.0','::','') else h; socket.create_connection((h, int(os.environ.get('SMART3W_PORT','50826'))), 3).close()" || exit 1

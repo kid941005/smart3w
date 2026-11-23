@@ -21,6 +21,15 @@ def test_detect_pdf_by_magic():
     assert detect_kind(FIXTURE_PDF) == "pdf"
 
 
+def test_document_size_limit_rejects_oversized_file(tmp_path, monkeypatch):
+    path = tmp_path / "big.pdf"
+    path.write_bytes(b"%PDF-1.4 demo")
+    monkeypatch.setenv("SMART3W_MAX_DOCUMENT_BYTES", "1")
+    with pytest.raises(DocumentError) as exc:
+        extract_document_file(path)
+    assert "过大" in str(exc.value)
+
+
 def test_detect_kind_by_content_type_and_extension(tmp_path):
     path = tmp_path / "unknown.bin"
     path.write_bytes(b"PK\x03\x04not-a-real-zip")

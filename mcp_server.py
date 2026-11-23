@@ -15,6 +15,7 @@ import tempfile
 import threading
 import time
 import uuid
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -33,6 +34,7 @@ from smart3w_core import (
 )
 from smart3w_discovery import extract_fields, extract_links, parse_robots_sitemaps, path_allowed, same_site
 from smart3w_fetch_utils import (
+    DEFAULT_CACHE_TTL,
     DEFAULT_RESPECT_ROBOTS,
     DomainRateLimiter,
     RobotsChecker,
@@ -119,9 +121,14 @@ DEFAULT_TIMEOUT = max(1, _env_int("SMART3W_TIMEOUT", 30))
 DEFAULT_PORT = min(65535, max(1, _env_int("SMART3W_PORT", 50826)))
 DEFAULT_HOST = (os.environ.get("SMART3W_HOST") or "0.0.0.0").strip() or "0.0.0.0"
 MAX_CACHE_CONTENT_BYTES = 2_000_000
+# 单次抓取的墙钟上限：即使 smart 模式内部按策略放大，也不能超过 MCP 客户端超时
+MAX_FETCH_SECONDS = max(10, _env_int("SMART3W_MAX_FETCH_SECONDS", 110))
+# 子进程 stdout/stderr 保留上限，避免异常页面把日志无限读入内存
+MAX_SUBPROCESS_OUTPUT_BYTES = max(65536, _env_int("SMART3W_MAX_SUBPROCESS_OUTPUT_BYTES", 4 * 1024 * 1024))
 
 # 抓取治理：URL 去重缓存 / robots / 按域名限速
-FETCH_CACHE = TTLCache()
+# max_age_seconds 允许到 7 天，缓存本身必须能存活 7 天，否则文档承诺失效
+FETCH_CACHE = TTLCache(ttl=max(DEFAULT_CACHE_TTL, 604800))
 SEARCH_CACHE = TTLCache()
 ROBOTS_CHECKER = RobotsChecker()
 RATE_LIMITER = DomainRateLimiter()
@@ -171,8 +178,9 @@ def _fetch_subprocess_timeout(timeout: int, mode: str) -> int:
     """计算 fetch.sh 子进程超时，覆盖每个策略的尝试次数与 smart 降级链路总时长。"""
     strategies = _STRATEGY_COUNT.get(mode, 1)
     # 每次尝试按 timeout 计（curl --max-time / scrapling timeout），另加建连与进程开销；
-    # 乘以尝试次数与策略数后，再留固定余量。
-    return (timeout + 15) * FETCH_RETRY * strategies + 15
+    # 乘以尝试次数与策略数后，再留固定余量；最后收口到整体墙钟上限。
+    budget = (timeout + 15) * FETCH_RETRY * strategies + 15
+    return max(10, min(MAX_FETCH_SECONDS, budget))
 
 
 def _terminate_process_tree(proc: subprocess.Popen) -> None:
@@ -264,6 +272,16 @@ def _resolve_bash() -> str:
     )
 
 
+def _read_stream_capped(handle) -> str:
+    """读取子进程输出文件，超过上限时截断，避免异常输出撑爆内存。"""
+    handle.seek(0)
+    data = handle.read(MAX_SUBPROCESS_OUTPUT_BYTES + 1)
+    text = data.decode("utf-8", errors="replace")
+    if len(data) > MAX_SUBPROCESS_OUTPUT_BYTES:
+        text = text[:MAX_SUBPROCESS_OUTPUT_BYTES] + "\n...[output truncated]"
+    return text
+
+
 def _run_fetch(
     args: list[str],
     timeout: int = DEFAULT_TIMEOUT,
@@ -277,6 +295,7 @@ def _run_fetch(
 
     统一使用 Popen 轮询：可在超时或后台任务取消时终止 fetch.sh 及其子进程；
     不传 cancel_event 时内部创建一个永不触发的事件，行为与普通调用一致。
+    stdout/stderr 写入临时文件并限量读取，避免子进程输出无上限占用内存。
     """
     if not FETCH_SH.is_file():
         raise FetchUnavailableError(f"找不到抓取脚本: {FETCH_SH}")
@@ -306,55 +325,50 @@ def _run_fetch(
         popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
     else:
         popen_kwargs["start_new_session"] = True
-    try:
-        proc = subprocess.Popen(
-            command,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            env=env,
-            **popen_kwargs,
-        )
-    except OSError as exc:
-        raise FetchUnavailableError(f"无法执行 fetch.sh（需要 bash）: {exc}") from exc
 
-    deadline = time.monotonic() + timeout
-    stdout = ""
-    stderr = ""
+    stdout_handle = tempfile.TemporaryFile()
+    stderr_handle = tempfile.TemporaryFile()
+    proc: subprocess.Popen | None = None
     try:
+        try:
+            proc = subprocess.Popen(
+                command,
+                stdout=stdout_handle,
+                stderr=stderr_handle,
+                env=env,
+                **popen_kwargs,
+            )
+        except OSError as exc:
+            raise FetchUnavailableError(f"无法执行 fetch.sh（需要 bash）: {exc}") from exc
+
+        deadline = time.monotonic() + timeout
         while True:
             if cancel_event.is_set():
                 _terminate_process_tree(proc)
-                try:
-                    stdout, stderr = proc.communicate(timeout=2)
-                except (subprocess.TimeoutExpired, OSError):
-                    pass
                 raise FetchCancelledError("抓取已取消")
 
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 _terminate_process_tree(proc)
-                try:
-                    stdout, stderr = proc.communicate(timeout=2)
-                except (subprocess.TimeoutExpired, OSError):
-                    pass
                 raise FetchTimeoutError(f"fetch.sh 执行超时（>{timeout}s）")
 
             try:
-                stdout, stderr = proc.communicate(timeout=min(0.2, remaining))
+                proc.wait(timeout=min(0.2, remaining))
                 break
             except subprocess.TimeoutExpired:
                 continue
-    finally:
-        if proc.poll() is None:
-            _terminate_process_tree(proc)
 
-    if proc.returncode != 0:
-        detail = (stderr or "").strip() or (stdout or "").strip() or f"Exit code {proc.returncode}"
-        raise FetchError(detail)
-    return stdout or ""
+        stdout = _read_stream_capped(stdout_handle)
+        stderr = _read_stream_capped(stderr_handle)
+        if proc.returncode != 0:
+            detail = (stderr or "").strip() or (stdout or "").strip() or f"Exit code {proc.returncode}"
+            raise FetchError(detail)
+        return stdout or ""
+    finally:
+        if proc is not None and proc.poll() is None:
+            _terminate_process_tree(proc)
+        stdout_handle.close()
+        stderr_handle.close()
 
 
 def _read_effective_url(path: str) -> str | None:
@@ -526,7 +540,10 @@ def _run_fetch_file(
         cached_entry = FETCH_CACHE.get_with_age(cache_key)
         if cached_entry is not None:
             cached, age = cached_entry
-            if max_age_seconds < 0 or age <= max_age_seconds:
+            # -1 表示按全局 TTL（SMART3W_CACHE_TTL，默认 300s）判定新鲜度；
+            # 缓存本身保留 7 天，只用于支持显式 max_age_seconds 的大值。
+            effective_max_age = DEFAULT_CACHE_TTL if max_age_seconds < 0 else max_age_seconds
+            if age <= effective_max_age:
                 result = {
                     **cached,
                     "url": url,
@@ -1127,15 +1144,18 @@ def _crawl_site(
     def _cancelled() -> bool:
         return cancel_event is not None and cancel_event.is_set()
 
-    queue: list[tuple[str, int]] = [(seed_url, 0)]
+    queue: deque[tuple[str, int]] = deque([(seed_url, 0)])
     queued: set[str] = {normalize_url(seed_url)}
     visited: set[str] = set()
     results: list[dict] = []
     invalid: list[str] = []
+    # 队列上限按 max_pages 放大但仍封顶，防止宽站/站群把 URL 与原始 HTML 无界堆积
+    queue_limit = max(100, min(5000, max_pages * 10))
+    truncated = False
     while queue and len(results) < max_pages:
         if _cancelled():
             break
-        url, depth = queue.pop(0)
+        url, depth = queue.popleft()
         key = normalize_url(url)
         if key in visited:
             continue
@@ -1184,6 +1204,9 @@ def _crawl_site(
         ):
             link_key = normalize_url(link["url"])
             if link_key and link_key not in visited and link_key not in queued:
+                if len(queue) >= queue_limit:
+                    truncated = True
+                    continue
                 queued.add(link_key)
                 queue.append((link["url"], depth + 1))
 
@@ -1197,7 +1220,7 @@ def _crawl_site(
         "unique": len(results),
         "succeeded": succeeded,
         "failed": len(results) - succeeded,
-        "truncated": bool(queue),
+        "truncated": bool(queue) or truncated,
         "results": results,
     }
     if _cancelled():
@@ -1218,7 +1241,7 @@ def smart3w_crawl(
     urls: list[str] | None = None,
     mode: str = "get",
     compress: bool = True,
-    timeout: int = 20,
+    timeout: int = DEFAULT_TIMEOUT,
     max_length: int = 5000,
     concurrency: int = 3,
     respect_robots: bool = True,
@@ -1428,7 +1451,7 @@ def smart3w_extract(
     urls: list[str],
     schema: dict[str, object],
     mode: str = "css",
-    timeout: int = 20,
+    timeout: int = DEFAULT_TIMEOUT,
     concurrency: int = 3,
     respect_robots: bool = True,
 ) -> dict[str, object]:

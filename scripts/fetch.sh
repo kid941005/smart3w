@@ -149,6 +149,27 @@ _policy_check_url() {
     return 2
 }
 
+# 入口统一 robots 检查：curl / scrapling 回退路径自身不查 robots.txt。
+# 仅在 SMART3W_RESPECT_ROBOTS=1 时执行；未安装 Python 时给出警告而不是静默放行。
+_robots_check_url() {
+    local url="$1"
+    [[ "${SMART3W_RESPECT_ROBOTS:-0}" == "1" ]] || return 0
+    if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
+        _warn "找不到 Python 解释器，跳过 robots 检查"
+        return 0
+    fi
+    local rc=0
+    "$PYTHON_BIN" "$SCRIPT_DIR/smart3w_http.py" --check-robots "$url" >/dev/null 2>&1 || rc=$?
+    if [[ $rc -eq 0 ]]; then
+        return 0
+    fi
+    if [[ $rc -eq 2 ]]; then
+        return 2
+    fi
+    _warn "robots 检查异常（rc=$rc），按不允许处理"
+    return 2
+}
+
 # 解析 Location（支持相对地址）。没有 Python 时只接受绝对 URL。
 _resolve_url() {
     local base="$1"
@@ -186,6 +207,7 @@ _run_with_timeout() {
 _fetch_by_python_http() {
     local url="$1"
     local output="$2"
+    local attempt=1
     local rc=0
     local meta=""
     # 注意：MSYS bash 下 `local -a args=(...)` 会吞掉 Windows 路径中的反斜杠，
@@ -199,16 +221,22 @@ _fetch_by_python_http() {
     [[ "${SMART3W_RESPECT_ROBOTS:-0}" == "1" ]] && args+=(--respect-robots)
 
     _info "策略1: Python HTTP 抓取..."
-    meta=$("${args[@]}") || rc=$?
-    if [[ $rc -eq 0 ]] && _is_valid_file "$output"; then
-        FETCH_CONTENT_TYPE="$meta"
-        local size
-        size=$(wc -c < "$output")
-        _ok "  Python HTTP 成功 (${size}B)"
-        return 0
-    fi
-    # 2 = 被 allowlist / SSRF / robots 拒绝，不能回退到 curl 绕过安全策略
-    [[ $rc -eq 2 ]] && return 2
+    while [[ $attempt -le $MAX_ATTEMPTS ]]; do
+        [[ $attempt -gt 1 ]] && _info "  第 $attempt/$MAX_ATTEMPTS 次尝试..."
+        rc=0
+        meta=$("${args[@]}") || rc=$?
+        if [[ $rc -eq 0 ]] && _is_valid_file "$output"; then
+            FETCH_CONTENT_TYPE="$meta"
+            local size
+            size=$(wc -c < "$output")
+            _ok "  Python HTTP 成功 (${size}B)"
+            return 0
+        fi
+        # 2 = 被 allowlist / SSRF / robots 拒绝，不能回退到 curl 绕过安全策略
+        [[ $rc -eq 2 ]] && return 2
+        attempt=$((attempt + 1))
+        [[ $attempt -le $MAX_ATTEMPTS ]] && sleep 1
+    done
     return 1
 }
 
@@ -563,9 +591,8 @@ _maybe_document() {
     if head -c 4 "$path" 2>/dev/null | grep -q '%PDF'; then
         return 0
     fi
-    if head -c 2 "$path" 2>/dev/null | grep -q 'PK'; then
-        return 0
-    fi
+    # 不再用 "PK" 魔数猜测 Office：任意 zip（crx/jar/普通压缩包）都符合 PK，
+    # 误判后会把二进制当文档解析；仅依 Content-Type / 扩展名判定 Office。
     return 1
 }
 
@@ -750,6 +777,14 @@ do_fetch() {
     _policy_check_url "$url"
     if [[ $? -eq 2 ]]; then
         _fail_fetch "$temp_raw" "$temp_compressed" "URL 被安全策略拒绝（allowlist/SSRF）"
+        return 1
+    fi
+
+    # 统一在入口检查 robots：curl / scrapling 回退路径自身不查 robots.txt
+    local robots_rc=0
+    _robots_check_url "$url" || robots_rc=$?
+    if [[ $robots_rc -eq 2 ]]; then
+        _fail_fetch "$temp_raw" "$temp_compressed" "robots.txt 禁止抓取该 URL"
         return 1
     fi
 

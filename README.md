@@ -2,7 +2,7 @@
 
 [![OpenClaw](https://img.shields.io/badge/OpenClaw-Compatible-green)](https://github.com/openclaw/openclaw)
 [![MIT](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-2.9.2-blue)](https://github.com/kid941005/smart3w/releases)
+[![Version](https://img.shields.io/badge/Version-2.10.0-blue)](https://github.com/kid941005/smart3w/releases)
 
 集 **SearXNG 网页搜索**、**Sitemap 解析** 与 **智能网页抓取** 于一体。
 
@@ -124,7 +124,7 @@ smart3w-mcp
 启动时会在 stderr 打印一行 `INFO` 日志，包含版本号与构建信息，便于确认线上实际运行的版本：
 
 ```text
-2026-11-23 15:00:00 INFO smart3w: starting smart3w-mcp version=2.9.2 commit=unknown build_time=unknown transport=streamable-http endpoint=http://0.0.0.0:50826/mcp python=3.12.11
+2026-11-23 15:00:00 INFO smart3w: starting smart3w-mcp version=2.10.0 commit=unknown build_time=unknown transport=streamable-http endpoint=http://0.0.0.0:50826/mcp python=3.12.11
 ```
 
 `commit` / `build_time` 可在构建镜像时通过 `SMART3W_BUILD_COMMIT` / `SMART3W_BUILD_TIME` 构建参数注入；官方 CI 在 tag 构建时会自动注入当前 commit 与构建时间。
@@ -381,17 +381,23 @@ Smart3W 支持自动识别并优化提取微信公众号文章。
 | `SMART3W_CHROME_PATH` | 空（自动探测） | `smart3w_interact` 使用的 Chrome 路径；未设置时自动探测 |
 | `SMART3W_PROFILE_DIR` | `~/.smart3w/profiles` | 浏览器登录态 profile 存放目录；容器部署建议挂载持久卷 |
 | `SMART3W_BROWSER_HEADLESS` | `1` | 浏览器是否无头运行（`1` / `0`） |
-| `SMART3W_BROWSER_NO_SANDBOX` | `0` | 是否给 Chrome 加 `--no-sandbox`；root 容器会自动启用 |
+| `SMART3W_BROWSER_NO_SANDBOX` | `0` | 是否给 Chrome 加 `--no-sandbox`；root 容器会自动启用。默认镜像为非 root；若容器内核限制 Chrome 沙箱导致 `smart3w_interact` 启动失败，可设为 `1`（会降低浏览器隔离） |
 | `SEARXNG_INSTANCE` | `https://searxng.example.com:59826` | SearXNG 地址（主实例；示例域名为占位） |
 | `SEARXNG_INSTANCES` | 空 | 备用 SearXNG 实例（逗号分隔），主实例失败时自动兜底 |
 | `SMART3W_SSL_VERIFY` | `1` | 是否校验 TLS 证书；自签证书实例可设为 `0`（不推荐） |
 | `SMART3W_MAX_DOWNLOAD_BYTES` | `52428800` | 单次下载上限（字节，默认 50MB）；Python HTTP 与 curl 生效，scrapling/stealthy 无法强制中断 |
 | `SMART3W_MAX_REDIRECTS` | `10` | curl 回退时手动跟随的最大重定向次数；每一跳都会重新做策略校验 |
 | `SMART3W_PORT` | `50826` | MCP HTTP 服务端口 |
-| `SMART3W_TIMEOUT` | `30` | MCP 层默认请求超时（秒） |
+| `SMART3W_TIMEOUT` | `30` | MCP 层默认请求超时（秒），也是 `smart3w_fetch` / `crawl` / `extract` 的默认单请求超时 |
+| `SMART3W_MAX_FETCH_SECONDS` | `110` | 单次抓取子进程的整体墙钟上限（秒）；smart 多策略重试不会超过该值，应小于 MCP 客户端超时 |
+| `SMART3W_MAX_SUBPROCESS_OUTPUT_BYTES` | `4194304` | 单次抓取保留的子进程 stdout/stderr 上限（字节），超出截断 |
+| `SMART3W_MAX_DOCUMENT_BYTES` | `52428800` | PDF/Office/CSV 文档解析输入上限（字节，默认 50MB） |
+| `SMART3W_INTERACT_MAX_SECONDS` | `300` | `smart3w_interact` 单次交互总时长上限（秒） |
+| `SMART3W_DNS_TIMEOUT` | `5` | SSRF 校验时 DNS 解析超时（秒）；超时按解析失败处理 |
+| `SMART3W_ALLOW_SERVICE_WORKERS` | `0` | 是否允许 Service Worker；默认 `0` 阻断，避免绕过请求级 SSRF/allowlist 校验 |
 | `SMART3W_BUILD_COMMIT` | `unknown` | 启动日志显示的构建 commit；镜像构建时通过 `--build-arg SMART3W_BUILD_COMMIT=...` 注入 |
 | `SMART3W_BUILD_TIME` | `unknown` | 启动日志显示的构建时间（ISO8601）；镜像构建时通过 `--build-arg SMART3W_BUILD_TIME=...` 注入 |
-| `SMART3W_CACHE_TTL` | `300` | 抓取结果缓存有效期（秒） |
+| `SMART3W_CACHE_TTL` | `300` | 缓存全局 TTL（秒）；`max_age_seconds=-1` 使用该值。抓取缓存最多保留 7 天，以支持显式传入更大的 `max_age_seconds` |
 | `SMART3W_CACHE_SIZE` | `64` | 抓取结果缓存最大条目数（LRU 淘汰） |
 | `SMART3W_RESPECT_ROBOTS` | `0` | 单个 `smart3w_fetch` 是否默认遵守 robots.txt（`1` 开启；`smart3w_crawl` 默认开启） |
 | `SMART3W_ROBOTS_TTL` | `3600` | robots.txt 按 origin 缓存时间（秒） |
@@ -442,6 +448,14 @@ services:
 
 首次部署前建议先创建目录：`mkdir -p smart3w_profiles`。
 
+容器以非 root 用户运行（镜像内 uid/gid 默认 `10001:10001`），宿主机挂载目录需可写：
+
+```bash
+sudo chown -R 10001:10001 ./smart3w_profiles
+```
+
+也可用 `docker build --build-arg SMART3W_UID=<uid> --build-arg SMART3W_GID=<gid>` 对齐宿主机用户；或改用命名卷（named volume）由 Docker 管理属主。
+
 #### host 网络配置
 
 `docker-compose.yml` 使用 `network_mode: host`，容器与宿主机共享网络栈，不配置 `ports` 端口映射。服务直接监听 `SMART3W_HOST:SMART3W_PORT`：
@@ -460,7 +474,7 @@ SMART3W_HOST=127.0.0.1 SMART3W_PORT=50999 docker compose up -d
 
 ```dotenv
 # .env
-SMART3W_IMAGE_TAG=v2.9.2
+SMART3W_IMAGE_TAG=v2.10.0
 SMART3W_HOST=127.0.0.1
 SMART3W_PORT=50999
 ```
@@ -474,8 +488,8 @@ docker compose up -d
 `docker-compose.yml` 的镜像 tag 支持 `SMART3W_IMAGE_TAG`，默认 `latest`；生产环境建议固定版本，避免自动拉到不兼容的新版本：
 
 ```bash
-SMART3W_IMAGE_TAG=v2.9.2 docker compose pull
-SMART3W_IMAGE_TAG=v2.9.2 docker compose up -d
+SMART3W_IMAGE_TAG=v2.10.0 docker compose pull
+SMART3W_IMAGE_TAG=v2.10.0 docker compose up -d
 ```
 
 > **安全说明**：MCP 服务默认监听 `0.0.0.0:50826` 且无内置鉴权，部署到公网时请务必放在带认证/限流的
@@ -642,6 +656,16 @@ Python HTTP/curl/scrapling 策略降级，`smart3w_interact` 使用 Playwright �
 ---
 
 ## 📝 更新日志
+
+### 2.10.0
+
+- **安全（浏览器请求守卫）**：`smart3w_interact` 改为 `context.route` 统一拦截初始页面、点击打开的新页面与弹窗；默认阻断 Service Worker（`SMART3W_ALLOW_SERVICE_WORKERS=1` 可放开），避免绕过 SSRF/allowlist 校验；新增 `SMART3W_INTERACT_MAX_SECONDS`（默认 300s）限制单次交互总时长。
+- **安全（容器）**：Docker 镜像改为非 root 用户运行（默认 uid/gid 10001），Chrome 不再因 root 自动加 `--no-sandbox`；`/data/profiles` 预先创建并授权，健康检查按 `SMART3W_HOST` 动态选择探测地址；`docker-compose.yml` 同步并补充宿主机目录属主说明。
+- **安全（robots）**：`fetch.sh` 在进入任何抓取策略前统一检查入口 URL 的 robots.txt；Python HTTP 抓取按 `MAX_ATTEMPTS` 重试；移除按 `PK` 魔数误判任意 zip 为 Office 文档的逻辑。
+- **健壮性（抓取上限）**：新增 `SMART3W_MAX_FETCH_SECONDS`、`SMART3W_MAX_SUBPROCESS_OUTPUT_BYTES` 与 `SMART3W_MAX_DOCUMENT_BYTES`；子进程输出写临时文件并限量读取；递归爬取队列改为 `deque` 并设上限，超限标记 `truncated`。
+- **健壮性（解析）**：PDF 解析 pypdf 失败时回退 pdfplumber；CSV/Office 文档增加输入大小检查；HTML 段落保留换行、表格展开 rowspan/colspan、charset 探测范围扩大到 1MB；DNS 解析增加超时与线程隔离。
+- **修复（缓存语义）**：抓取缓存 TTL 提升到与 `max_age_seconds` 承诺一致的 7 天；`SMART3W_TIMEOUT` 统一为 `fetch` / `crawl` / `extract` 默认超时。
+- **依赖**：显式声明 `lxml` 与 `markdownify`，避免依赖传递带来的隐式缺失。
 
 ### 2.9.2
 

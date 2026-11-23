@@ -1,7 +1,7 @@
 ---
 name: smart3w
 description: 智能网页抓取路由 + SearXNG 搜索，支持 PDF/Office 文档解析、搜索即读、站点地图发现、递归抓取、CSS/XPath 结构化抽取与真实浏览器交互（点击/登录/翻页）。支持 4 种明确语义的抓取方式：get 使用 Python HTTP（逐跳 SSRF/robots，失败回退 curl），fetch 使用内置 scrapling 包装器（DynamicFetcher + --real-chrome），stealthy 使用内置 scrapling 包装器（StealthyFetcher + --real-chrome），抓取后都会复检最终 URL，smart 按 Python HTTP → curl → fetch → stealthy 自动降级。支持并发批量抓取、URL 去重缓存、robots.txt 检查与按域名限速；搜索支持多 SearXNG 实例故障转移与语言/时间/分类/安全搜索/引擎参数。默认输出尽量为 Markdown：普通网页提取正文并尽量保留图片为 Markdown 图片链接，微信文章按正文段落输出并保留插图。
-version: 2.9.2
+version: 2.10.0
 license: MIT
 ---
 
@@ -291,13 +291,19 @@ cargo build --release --locked
 | `SMART3W_CHROME_PATH` | 空（自动探测） | `smart3w_interact` 使用的 Chrome 路径 |
 | `SMART3W_PROFILE_DIR` | `~/.smart3w/profiles` | 浏览器登录态 profile 存放目录 |
 | `SMART3W_BROWSER_HEADLESS` | `1` | 浏览器是否无头运行 |
-| `SMART3W_BROWSER_NO_SANDBOX` | `0` | 是否给 Chrome 加 `--no-sandbox`；root 容器自动启用 |
+| `SMART3W_BROWSER_NO_SANDBOX` | `0` | 是否给 Chrome 加 `--no-sandbox`；root 容器自动启用。默认镜像为非 root；若容器内核限制 Chrome 沙箱导致交互失败，可设为 `1`（降低隔离） |
 | `SMART3W_HOST` | `0.0.0.0` | MCP HTTP 监听地址 |
 | `SMART3W_PORT` | `50826` | MCP HTTP 服务端口 |
-| `SMART3W_TIMEOUT` | `30` | MCP 层默认请求超时（秒） |
+| `SMART3W_TIMEOUT` | `30` | MCP 层默认请求超时（秒），也是 `fetch` / `crawl` / `extract` 默认单请求超时 |
+| `SMART3W_MAX_FETCH_SECONDS` | `110` | 单次抓取子进程整体墙钟上限（秒） |
+| `SMART3W_MAX_SUBPROCESS_OUTPUT_BYTES` | `4194304` | 子进程 stdout/stderr 保留上限（字节） |
+| `SMART3W_MAX_DOCUMENT_BYTES` | `52428800` | PDF/Office/CSV 解析输入上限（字节，默认 50MB） |
+| `SMART3W_INTERACT_MAX_SECONDS` | `300` | `smart3w_interact` 单次交互总时长上限（秒） |
+| `SMART3W_DNS_TIMEOUT` | `5` | SSRF 校验 DNS 解析超时（秒） |
+| `SMART3W_ALLOW_SERVICE_WORKERS` | `0` | 是否允许 Service Worker；默认阻断以保持 SSRF 防线 |
 | `SMART3W_RUST` | `auto` | Rust 加速后端开关：`auto` / `on` / `off` |
 | `SMART3W_RS_BIN` | 空（自动探测） | Rust 二进制路径；Docker 镜像为 `/usr/local/bin/smart3w-rs` |
-| `SMART3W_CACHE_TTL` | `300` | 抓取结果缓存有效期（秒） |
+| `SMART3W_CACHE_TTL` | `300` | 缓存全局 TTL（秒）；`max_age_seconds=-1` 使用该值；缓存最多保留 7 天以支持显式大值 |
 | `SMART3W_CACHE_SIZE` | `64` | 抓取结果缓存最大条目数（LRU 淘汰） |
 | `SMART3W_RESPECT_ROBOTS` | `0` | 单个 `smart3w_fetch` 是否默认遵守 robots.txt（`smart3w_crawl` 默认开启） |
 | `SMART3W_ROBOTS_TTL` | `3600` | robots.txt 按 origin 缓存时间（秒） |

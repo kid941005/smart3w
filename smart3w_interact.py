@@ -28,6 +28,8 @@ MAX_VALUE_LENGTH = 20_000
 PROFILE_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 PROFILE_DIR_ENV = "SMART3W_PROFILE_DIR"
 CHROME_PATH_ENV = "SMART3W_CHROME_PATH"
+INTERACT_MAX_SECONDS_ENV = "SMART3W_INTERACT_MAX_SECONDS"
+DEFAULT_INTERACT_MAX_SECONDS = 300
 
 ACTION_TYPES = frozenset({
     "goto",
@@ -350,8 +352,22 @@ def _launch_browser(playwright):
             ) from exc
 
 
-def _install_request_guard(page, blocked_errors: list[str]):
-    """所有浏览器请求都过 SSRF/allowlist；非 http(s) 资源放行。"""
+def _max_interact_seconds() -> int:
+    """浏览器交互整体墙钟上限，防止多动作/慢站点拖死调用方。"""
+    raw = os.environ.get(INTERACT_MAX_SECONDS_ENV, "")
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_INTERACT_MAX_SECONDS
+    return max(10, value)
+
+
+def _install_request_guard(target, blocked_errors: list[str]):
+    """所有浏览器请求都过 SSRF/allowlist；非 http(s) 资源放行。
+
+    target 可以是 Page，也可以是 BrowserContext（推荐：context.route 能同时
+    覆盖点击打开的新页面与弹窗），二者都提供 route(pattern, handler)。
+    """
     policy_cache: dict[tuple[str, str], str | None] = {}
 
     def guard(route):
@@ -377,15 +393,29 @@ def _install_request_guard(page, blocked_errors: list[str]):
             return route.abort("blockedbyclient")
         return route.continue_()
 
-    page.route("**/*", guard)
+    target.route("**/*", guard)
 
 
-def _execute_actions(page, actions: list[dict[str, object]], default_wait_ms: int) -> list[str]:
-    """按动作列表执行；仅使用 Playwright 公开 API，不执行页面 JavaScript。"""
+def _execute_actions(
+    page,
+    actions: list[dict[str, object]],
+    default_wait_ms: int,
+    deadline: float | None = None,
+) -> list[str]:
+    """按动作列表执行；仅使用 Playwright 公开 API，不执行页面 JavaScript。
+
+    deadline 为 time.monotonic() 绝对时刻；提供时每个动作与等待都受剩余时间约束，
+    避免单个长动作把整体交互拖过调用方超时。
+    """
     completed: list[str] = []
     for index, action in enumerate(actions):
         kind = str(action["type"])
         timeout = action.get("timeout_ms")
+        if deadline is not None:
+            remaining_ms = int((deadline - time.monotonic()) * 1000)
+            if remaining_ms <= 0:
+                raise InteractionError("浏览器交互总时长超限", "INTERACTION_TIMEOUT")
+            timeout = remaining_ms if timeout is None else min(int(timeout), remaining_ms)
         try:
             if kind == "goto":
                 page.goto(str(action["url"]), wait_until="domcontentloaded", timeout=timeout)
@@ -429,6 +459,8 @@ def _execute_actions(page, actions: list[dict[str, object]], default_wait_ms: in
 
         completed.append(kind)
         extra_wait = int(action.get("wait_ms", default_wait_ms))
+        if deadline is not None:
+            extra_wait = min(extra_wait, max(0, int((deadline - time.monotonic()) * 1000)))
         if extra_wait > 0:
             page.wait_for_timeout(extra_wait)
     return completed
@@ -488,6 +520,7 @@ def run_interaction(
     state = _load_state(state_path)
     blocked_errors: list[str] = []
     started = time.monotonic()
+    deadline = started + _max_interact_seconds()
     context = None
     result: dict[str, object] = {}
 
@@ -499,13 +532,22 @@ def run_interaction(
                     storage_state=state,
                     viewport={"width": 1366, "height": 900},
                     ignore_https_errors=not env_flag("SMART3W_SSL_VERIFY", True),
+                    # service worker 的请求不经过 page.route，默认阻断以保持 SSRF 防线完整
+                    service_workers="allow" if env_flag("SMART3W_ALLOW_SERVICE_WORKERS", False) else "block",
                 )
+                # context 级路由覆盖初始页面、点击打开的新页面和弹窗
+                _install_request_guard(context, blocked_errors)
+
+                def _configure_new_page(new_page):
+                    new_page.set_default_timeout(timeout * 1000)
+                    new_page.set_default_navigation_timeout(timeout * 1000)
+
+                context.on("page", _configure_new_page)
                 if normalized_cookies:
                     context.add_cookies(normalized_cookies)
                 page = context.new_page()
                 page.set_default_timeout(timeout * 1000)
                 page.set_default_navigation_timeout(timeout * 1000)
-                _install_request_guard(page, blocked_errors)
                 try:
                     page.goto(url, wait_until="domcontentloaded", timeout=timeout * 1000)
                 except Exception as exc:
@@ -514,7 +556,7 @@ def run_interaction(
                     raise
                 if wait_ms:
                     page.wait_for_timeout(wait_ms)
-                completed = _execute_actions(page, normalized, wait_ms)
+                completed = _execute_actions(page, normalized, wait_ms, deadline=deadline)
                 final_url = page.url
                 title = page.title()
                 content = _extract_content(page, content_format)

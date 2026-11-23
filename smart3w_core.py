@@ -194,20 +194,45 @@ def _render_inline(node, img_attrs=IMAGE_ATTRS):
 
 
 def _paragraph_text(node, img_attrs=IMAGE_ATTRS):
-    """行内渲染后压缩空白，得到单段文本。"""
-    return " ".join(_render_inline(node, img_attrs).split())
+    """行内渲染后压缩空白；保留显式换行（br），避免段落内换行被吞掉。"""
+    text = _render_inline(node, img_attrs)
+    lines = [" ".join(line.split()) for line in text.splitlines()]
+    return "\n".join(line for line in lines if line).strip()
 
 
 def _render_table(node, img_attrs=IMAGE_ATTRS):
-    """把 <table> 渲染为 Markdown 表格（首行作为表头）。"""
-    rows = []
-    for tr in node.find_all("tr"):
-        cells = [
-            _paragraph_text(cell, img_attrs).replace("|", "\\|")
-            for cell in tr.find_all(["td", "th"], recursive=False)
-        ]
-        if cells:
-            rows.append(cells)
+    """把 <table> 渲染为 Markdown 表格（首行作为表头），展开 rowspan/colspan。"""
+
+    def _span(cell, name: str) -> int:
+        try:
+            value = int((cell.get(name) or "1").strip())
+        except (AttributeError, ValueError):
+            return 1
+        return min(max(value, 1), 1000)
+
+    grid: list[list[str]] = []
+    for row_index, tr in enumerate(node.find_all("tr")):
+        while len(grid) <= row_index:
+            grid.append([])
+        column = 0
+        for cell in tr.find_all(["td", "th"], recursive=False):
+            while column < len(grid[row_index]) and grid[row_index][column] != "":
+                column += 1
+            text = _paragraph_text(cell, img_attrs).replace("|", "\\|")
+            rowspan = _span(cell, "rowspan")
+            colspan = _span(cell, "colspan")
+            for dr in range(rowspan):
+                target_row = row_index + dr
+                while len(grid) <= target_row:
+                    grid.append([])
+                while len(grid[target_row]) < column + colspan:
+                    grid[target_row].append("")
+                for dc in range(colspan):
+                    if grid[target_row][column + dc] == "":
+                        grid[target_row][column + dc] = text
+            column += colspan
+
+    rows = [row for row in grid if any(cell for cell in row)]
     if not rows:
         return ""
     width = max(len(row) for row in rows)
@@ -322,7 +347,8 @@ def _decode_html_bytes(raw: bytes) -> str:
     if raw.startswith(b"\xef\xbb\xbf"):
         return raw.decode("utf-8-sig", errors="replace")
     candidates = []
-    match = re.search(rb"charset\s*=\s*['\"]?([A-Za-z0-9_.:-]+)", raw[:4096], re.I)
+    # meta charset 可能出现在较长 head 之后（如大段脚本），扫描前 1MB 而不是 4KB
+    match = re.search(rb"charset\s*=\s*['\"]?([A-Za-z0-9_.:-]+)", raw[:1_048_576], re.I)
     if match:
         declared = match.group(1).decode("ascii", "ignore").lower()
         if declared in ("gb2312", "gbk"):

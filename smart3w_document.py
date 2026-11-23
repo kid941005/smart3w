@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import io
+import os
 import re
 import zipfile
 from pathlib import Path
@@ -170,8 +171,20 @@ def _docx_to_markdown(path: Path) -> tuple[str, dict[str, Any]]:
     return "\n\n".join(blocks), {"paragraphs": paragraphs, "tables": tables}
 
 
+def _max_document_bytes() -> int:
+    """文档解析输入上限；非正整数回退 50MB，避免超大文件读满内存。"""
+    raw = os.environ.get("SMART3W_MAX_DOCUMENT_BYTES")
+    if raw is None:
+        return 50 * 1024 * 1024
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return 50 * 1024 * 1024
+    return value if value > 0 else 50 * 1024 * 1024
+
+
 def _pdf_to_markdown(path: Path) -> tuple[str, dict[str, Any]]:
-    pages: list[str] = []
+    pypdf_error: Exception | None = None
     try:
         from pypdf import PdfReader
     except ImportError:
@@ -179,6 +192,7 @@ def _pdf_to_markdown(path: Path) -> tuple[str, dict[str, Any]]:
 
     if PdfReader is not None:
         try:
+            pages: list[str] = []
             reader = PdfReader(str(path))
             if reader.is_encrypted:
                 try:
@@ -192,21 +206,25 @@ def _pdf_to_markdown(path: Path) -> tuple[str, dict[str, Any]]:
                     pages.append((page.extract_text() or "").strip())
                 except Exception:
                     pages.append("")
+            text = "\n\n".join(page for page in pages if page)
+            return text, {"pages": len(pages)}
         except DocumentError:
             raise
         except Exception as exc:
-            raise DocumentError(f"PDF 解析失败: {exc}") from exc
-    else:
-        try:
-            import pdfplumber
-        except ImportError as exc:
-            raise DocumentError("解析 PDF 需要 pypdf 或 pdfplumber，请安装 pypdf") from exc
-        try:
-            with pdfplumber.open(str(path)) as pdf:
-                pages = [((page.extract_text() or "").strip()) for page in pdf.pages]
-        except Exception as exc:
-            raise DocumentError(f"PDF 解析失败: {exc}") from exc
+            # pypdf 对部分损坏/加密变体较脆弱，继续尝试 pdfplumber
+            pypdf_error = exc
 
+    try:
+        import pdfplumber
+    except ImportError as exc:
+        if pypdf_error is not None:
+            raise DocumentError(f"PDF 解析失败: {pypdf_error}") from pypdf_error
+        raise DocumentError("解析 PDF 需要 pypdf 或 pdfplumber，请安装 pypdf") from exc
+    try:
+        with pdfplumber.open(str(path)) as pdf:
+            pages = [((page.extract_text() or "").strip()) for page in pdf.pages]
+    except Exception as exc:
+        raise DocumentError(f"PDF 解析失败: {exc}") from exc
     text = "\n\n".join(page for page in pages if page)
     return text, {"pages": len(pages)}
 
@@ -280,7 +298,8 @@ def _pptx_to_markdown(path: Path) -> tuple[str, dict[str, Any]]:
             notes = (slide.notes_slide.notes_text_frame.text or "").strip()
             if notes:
                 parts.append("Notes:\n" + notes)
-        slides.append(f"## Slide {index}\n\n" + "\n\n".join(parts) if parts else f"## Slide {index}")
+        body = "\n\n".join(parts)
+        slides.append(f"## Slide {index}\n\n{body}" if body else f"## Slide {index}")
     return "\n\n".join(slides), {"slides": len(slides)}
 
 
@@ -370,6 +389,13 @@ def extract_document_file(
     非文档抛 NotADocument；识别为旧版 Office 或解析失败抛 DocumentError。
     """
     source = Path(path)
+    try:
+        size = source.stat().st_size
+    except OSError as exc:
+        raise DocumentError(f"无法读取文档: {exc}") from exc
+    limit = _max_document_bytes()
+    if size > limit:
+        raise DocumentError(f"文档过大（{size} 字节，上限 {limit} 字节）")
     kind = detect_kind(source, content_type=content_type, url=url)
     if kind is None:
         raise NotADocument("不是支持的文档格式")

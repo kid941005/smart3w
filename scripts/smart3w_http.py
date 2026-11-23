@@ -24,7 +24,7 @@ try:
 except ImportError:  # 延迟到实际抓取时再提示，--check-policy 仍可用
     httpx = None  # type: ignore[assignment]
 
-from smart3w_url_utils import env_flag, proxy_url, url_policy_error  # noqa: E402
+from smart3w_url_utils import env_flag, host_bypasses_proxy, proxy_url, url_policy_error  # noqa: E402
 
 try:
     from smart3w_fetch_utils import RobotsChecker  # noqa: E402
@@ -37,14 +37,6 @@ DEFAULT_USER_AGENT = (
 )
 MARKDOWN_ACCEPT = "text/markdown, text/html;q=0.9, */*;q=0.8"
 HTML_ACCEPT = "text/html, application/xhtml+xml, */*;q=0.8"
-PROXY_ENV_VARS = (
-    "HTTP_PROXY",
-    "http_proxy",
-    "HTTPS_PROXY",
-    "https_proxy",
-    "ALL_PROXY",
-    "all_proxy",
-)
 
 
 class BlockedURLError(RuntimeError):
@@ -92,29 +84,32 @@ def _httpx_proxy_url() -> str | None:
     return raw
 
 
-def _normalize_proxy_env() -> None:
-    """httpx 不接受 socks://，统一改写为 socks5://；同时清理 NO_PROXY 的方括号。"""
-    for name in PROXY_ENV_VARS:
-        value = os.environ.get(name)
-        if not value:
-            continue
-        lower = value.lower()
-        if lower.startswith("socks5h://"):
-            os.environ[name] = "socks5://" + value[len("socks5h://") :]
-        elif lower.startswith("socks://"):
-            os.environ[name] = "socks5://" + value[len("socks://") :]
-    for name in ("NO_PROXY", "no_proxy"):
-        value = os.environ.get(name)
-        if not value:
-            continue
-        parts = []
-        for part in value.split(","):
-            item = part.strip()
-            if item.startswith("[") and item.endswith("]"):
-                item = item[1:-1]
-            if item:
-                parts.append(item)
-        os.environ[name] = ",".join(parts)
+def _env_proxy_url(url: str) -> str | None:
+    """按目标 scheme 读取环境代理；不修改 os.environ，避免污染同进程其他 httpx 客户端。"""
+    scheme = urllib.parse.urlsplit(url).scheme.lower()
+    keys = (
+        ("HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy")
+        if scheme == "https"
+        else ("HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy")
+    )
+    for key in keys:
+        value = (os.environ.get(key) or "").strip()
+        if value:
+            lower = value.lower()
+            if lower.startswith("socks5h://"):
+                return "socks5://" + value[len("socks5h://") :]
+            if lower.startswith("socks://"):
+                return "socks5://" + value[len("socks://") :]
+            return value
+    return None
+
+
+def _proxy_for(url: str) -> str | None:
+    """显式配置优先；命中 NO_PROXY 的目标直连。"""
+    host = urllib.parse.urlsplit(url).hostname or ""
+    if host_bypasses_proxy(host):
+        return None
+    return _httpx_proxy_url() or _env_proxy_url(url)
 
 
 def _write_effective(path: str | None, url: str) -> None:
@@ -165,7 +160,6 @@ def fetch_url(
         raise BlockedURLError(blocked)
     if httpx is None:
         raise HTTPXUnavailable("httpx 未安装，无法使用 Python HTTP 抓取")
-    _normalize_proxy_env()
     timeout = max(1, int(timeout))
     max_redirects = max(0, int(max_redirects))
     checker = RobotsChecker() if respect_robots and RobotsChecker is not None else None
@@ -177,21 +171,23 @@ def fetch_url(
     }
 
     current = url
-    with httpx.Client(
-        follow_redirects=False,
-        timeout=httpx.Timeout(timeout, connect=min(timeout, 10)),
-        proxy=_httpx_proxy_url(),
-        trust_env=True,
-        verify=env_flag("SMART3W_SSL_VERIFY", True),
-        headers=headers,
-    ) as client:
-        for _ in range(max_redirects + 1):
-            blocked = _url_policy_error(current)
-            if blocked:
-                raise BlockedURLError(blocked)
-            if checker is not None and not checker.allows(current):
-                raise BlockedURLError(f"robots.txt 禁止抓取: {current}")
+    for _ in range(max_redirects + 1):
+        blocked = _url_policy_error(current)
+        if blocked:
+            raise BlockedURLError(blocked)
+        if checker is not None and not checker.allows(current):
+            raise BlockedURLError(f"robots.txt 禁止抓取: {current}")
 
+        # 每跳单独建客户端：重定向可能改变 host，NO_PROXY/代理选择要随之变化；
+        # trust_env=False 避免 httpx 解析 NO_PROXY 中的 [::1] 时报 Invalid port。
+        with httpx.Client(
+            follow_redirects=False,
+            timeout=httpx.Timeout(timeout, connect=min(timeout, 10)),
+            proxy=_proxy_for(current),
+            trust_env=False,
+            verify=env_flag("SMART3W_SSL_VERIFY", True),
+            headers=headers,
+        ) as client:
             with client.stream("GET", current) as response:
                 if response.is_redirect:
                     location = response.headers.get("location")
@@ -234,6 +230,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--respect-robots", action="store_true")
     parser.add_argument("--validate-only", action="store_true")
     parser.add_argument("--check-policy", action="store_true")
+    parser.add_argument("--check-robots", action="store_true")
     parser.add_argument("--resolve-url", nargs=2, metavar=("BASE", "LOCATION"))
     args = parser.parse_args(argv)
 
@@ -247,6 +244,16 @@ def main(argv: list[str] | None = None) -> int:
         error = _url_policy_error(args.url)
         if error:
             print(f"URL 被拒绝: {error}", file=sys.stderr)
+            return 2
+        return 0
+
+    if args.check_robots:
+        error = _url_policy_error(args.url)
+        if error:
+            print(f"URL 被拒绝: {error}", file=sys.stderr)
+            return 2
+        if RobotsChecker is not None and not RobotsChecker().allows(args.url):
+            print(f"robots.txt 禁止抓取: {args.url}", file=sys.stderr)
             return 2
         return 0
 

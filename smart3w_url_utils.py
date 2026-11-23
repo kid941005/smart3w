@@ -166,7 +166,15 @@ def trust_proxy_dns() -> bool:
 
 def _no_proxy_entries() -> tuple[str, ...]:
     raw = os.environ.get("NO_PROXY") or os.environ.get("no_proxy") or ""
-    return tuple(part.strip().lower().rstrip(".") for part in raw.split(",") if part.strip())
+    entries = []
+    for part in raw.split(","):
+        item = part.strip().lower().rstrip(".")
+        # NO_PROXY 中 IPv6 常写成 [::1]，去掉方括号后才能与 hostname 比较
+        if item.startswith("[") and item.endswith("]"):
+            item = item[1:-1]
+        if item:
+            entries.append(item)
+    return tuple(entries)
 
 
 def host_bypasses_proxy(host: str) -> bool:
@@ -218,17 +226,35 @@ def is_private_ip(ip: str) -> bool:
 
 
 def resolve_target_ips(host: str) -> list[str]:
-    """解析主机名到 IP 列表；解析失败返回空列表。"""
+    """解析主机名到 IP 列表；解析失败或超时返回空列表。"""
     try:
-        infos = socket.getaddrinfo(host, None)
-    except Exception:
+        timeout = max(0.1, float(os.environ.get("SMART3W_DNS_TIMEOUT", "5")))
+    except (TypeError, ValueError):
+        timeout = 5.0
+    result: list[list[str]] = []
+
+    def _resolve() -> None:
+        try:
+            infos = socket.getaddrinfo(host, None)
+        except Exception:
+            result.append([])
+            return
+        ips: list[str] = []
+        for info in infos:
+            ip = str(info[4][0]).split("%", 1)[0]
+            if ip not in ips:
+                ips.append(ip)
+        result.append(ips)
+
+    # getaddrinfo 没有超时参数；放进 daemon 线程等待，避免单次抓取被 DNS 卡死
+    import threading
+
+    thread = threading.Thread(target=_resolve, daemon=True)
+    thread.start()
+    thread.join(timeout)
+    if thread.is_alive() or not result:
         return []
-    ips: list[str] = []
-    for info in infos:
-        ip = str(info[4][0]).split("%", 1)[0]
-        if ip not in ips:
-            ips.append(ip)
-    return ips
+    return result[0]
 
 
 def ssrf_blocked(url: str) -> str | None:

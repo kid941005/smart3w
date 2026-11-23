@@ -128,3 +128,12 @@ def test_resolve_url_joins_relative_location(capsys):
 
     assert rc == 0
     assert capsys.readouterr().out.strip() == "https://example.com/c"
+
+
+def test_proxy_for_honors_no_proxy_with_ipv6_brackets(monkeypatch):
+    monkeypatch.setenv("SMART3W_PROXY_URL", "http://127.0.0.1:7890")
+    monkeypatch.setenv("NO_PROXY", "localhost,[::1],example.com")
+
+    assert smart3w_http._proxy_for("http://[::1]:8080/") is None
+    assert smart3w_http._proxy_for("https://example.com/") is None
+    assert smart3w_http._proxy_for("https://other.test/") == "http://127.0.0.1:7890"
