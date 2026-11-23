@@ -442,13 +442,34 @@ services:
 
 首次部署前建议先创建目录：`mkdir -p smart3w_profiles`。
 
-`docker-compose.yml` 使用 `network_mode: host`，容器直接使用宿主机网络，不配置 `ports` 端口映射。服务监听地址由 `SMART3W_HOST` 控制（默认 `0.0.0.0`），端口由 `SMART3W_PORT` 控制（默认 `50826`）：
+#### host 网络配置
+
+`docker-compose.yml` 使用 `network_mode: host`，容器与宿主机共享网络栈，不配置 `ports` 端口映射。服务直接监听 `SMART3W_HOST:SMART3W_PORT`：
+
+| 场景 | 配置 | 访问地址 |
+| --- | --- | --- |
+| 默认，允许其他主机访问 | `SMART3W_HOST=0.0.0.0`、`SMART3W_PORT=50826` | `http://<宿主机IP>:50826/mcp` |
+| 仅本机反向代理访问 | `SMART3W_HOST=127.0.0.1`、`SMART3W_PORT=50826` | `http://127.0.0.1:50826/mcp` |
+| 仅本机且自定义端口 | `SMART3W_HOST=127.0.0.1`、`SMART3W_PORT=50999` | `http://127.0.0.1:50999/mcp` |
+
+可直接在命令前覆盖，或写入同目录 `.env`（compose 会自动读取）：
 
 ```bash
-SMART3W_PORT=50999 docker compose up -d
+SMART3W_HOST=127.0.0.1 SMART3W_PORT=50999 docker compose up -d
 ```
 
-host 模式下，容器内的 `127.0.0.1` 就是宿主机，便于访问同机 SearXNG 或代理；如需改回 bridge 模式，删除 `network_mode: host` 并自行增加 `ports`。
+```dotenv
+# .env
+SMART3W_IMAGE_TAG=v2.9.2
+SMART3W_HOST=127.0.0.1
+SMART3W_PORT=50999
+```
+
+```bash
+docker compose up -d
+```
+
+说明：`SMART3W_HOST` 是监听地址，不是对外域名；`0.0.0.0` 监听所有网卡，`127.0.0.1` 仅本机可访问。`SMART3W_PORT` 同时被容器健康检查使用，修改后健康检查会自动使用新端口。host 模式下容器内的 `127.0.0.1` 就是宿主机，便于访问同机 SearXNG 或代理；如需改回 bridge 模式，删除 `network_mode: host` 并自行增加 `ports`。
 
 `docker-compose.yml` 的镜像 tag 支持 `SMART3W_IMAGE_TAG`，默认 `latest`；生产环境建议固定版本，避免自动拉到不兼容的新版本：
 

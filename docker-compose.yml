@@ -6,7 +6,8 @@ services:
     restart: unless-stopped
     init: true
     # 使用宿主机网络：服务直接监听宿主机端口，不需要 ports 映射。
-    # 端口由下方 SMART3W_PORT 环境变量控制（默认 50826）。
+    # SMART3W_HOST 控制绑定地址（0.0.0.0 对外，127.0.0.1 仅本机）；
+    # SMART3W_PORT 控制监听端口（默认 50826，健康检查同步使用）。
     network_mode: host
     # Chrome 需要较大的共享内存，默认 64MB 容易崩，这里给 1GB
     shm_size: "1gb"
@@ -24,7 +25,9 @@ services:
       NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1,::1,searxng}
       MCP_TRANSPORT: streamable-http
       MCP_PATH: /mcp
+      # host 网络下直接监听的地址；127.0.0.1 仅允许本机/反向代理访问，0.0.0.0 监听所有网卡
       SMART3W_HOST: ${SMART3W_HOST:-0.0.0.0}
+      # host 网络下实际监听端口，同时用于健康检查
       SMART3W_PORT: ${SMART3W_PORT:-50826}
       SMART3W_TIMEOUT: ${SMART3W_TIMEOUT:-30}
       # smart3w_interact 保存登录 Cookie / localStorage 的目录（容器内路径）
