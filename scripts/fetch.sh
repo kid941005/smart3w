@@ -170,19 +170,6 @@ _robots_check_url() {
     return 2
 }
 
-# 解析 Location（支持相对地址）。没有 Python 时只接受绝对 URL。
-_resolve_url() {
-    local base="$1"
-    local location="$2"
-    if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
-        case "$location" in
-            http://*|https://*) printf '%s' "$location"; return 0 ;;
-            *) return 1 ;;
-        esac
-    fi
-    "$PYTHON_BIN" "$SCRIPT_DIR/smart3w_http.py" --resolve-url "$base" "$location"
-}
-
 # 有 timeout 命令时加上超时限制，没有时直接执行（提升 macOS 等环境兼容性）
 _run_with_timeout() {
     local seconds="$1"; shift
@@ -241,98 +228,38 @@ _fetch_by_python_http() {
 }
 
 # =============================================================================
-# 策略1b: curl 抓取（Python HTTP 不可用或失败时的兼容回退）
+# 策略1b: curl 引擎（与 Python HTTP 共用 smart3w_http.py 的逐跳策略实现）
 # =============================================================================
 _fetch_by_curl() {
     local url="$1"
     local output="$2"
     local attempt=1
     local rc=0
-    local header_file=""
-    local -a curl_args=(
-        -f -s --compressed
-        -A "$USER_AGENT"
-        -H "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
-        -H "Accept-Language: zh-CN,zh;q=0.9,en;q=0.8"
-        -H "Connection: keep-alive"
-        -H "Cache-Control: no-cache"
-        --connect-timeout 10
-        --max-filesize "$MAX_DOWNLOAD_BYTES"
-        --proto "=http,https"
-        -o "$output"
+    local meta=""
+    local -a args
+    args=(
+        "$PYTHON_BIN" "$SCRIPT_DIR/smart3w_http.py" "$url" "$output"
+        --engine curl --timeout "$TIMEOUT_CURL" --ua "$USER_AGENT" --max-redirs "$MAX_REDIRECTS"
     )
-    case "${SMART3W_SSL_VERIFY:-1}" in
-        0|false|no|off) curl_args+=("-k") ;;
-    esac
-    [[ -n "$PROXY_URL" ]] && curl_args+=("--proxy" "$PROXY_URL")
+    [[ -n "$EFFECTIVE_URL_FILE" ]] && args+=(--effective-url "$EFFECTIVE_URL_FILE")
+    [[ "${SMART3W_RESPECT_ROBOTS:-0}" == "1" ]] && args+=(--respect-robots)
 
-    _info "策略1: curl 抓取..."
-
+    _info "策略1b: curl 引擎抓取..."
     while [[ $attempt -le $MAX_ATTEMPTS ]]; do
         [[ $attempt -gt 1 ]] && _info "  第 $attempt/$MAX_ATTEMPTS 次尝试..."
         rc=0
-        header_file=$(_make_temp) || return 1
-        local current="$url"
-        local hop=0
-        local deadline=$((SECONDS + TIMEOUT_CURL))
-
-        # 手动逐跳处理重定向：每一跳都重新做 allowlist/SSRF 校验，
-        # 不能使用 curl -L 一次性跟随，否则 302 可以绕过首跳预检。
-        while :; do
-            if ! _policy_check_url "$current"; then
-                rc=2
-                break
-            fi
-            local remaining=$((deadline - SECONDS))
-            if [[ $remaining -lt 1 ]]; then
-                rc=1
-                break
-            fi
-            : > "$header_file"
-            local code
-            code=$(curl "${curl_args[@]}" --max-time "$remaining" -D "$header_file" \
-                -w '%{http_code}' "$current" 2>/dev/null) || { rc=$?; break; }
-
-            if [[ "$code" =~ ^2[0-9][0-9]$ ]] && _is_valid_file "$output"; then
-                if [[ -n "$EFFECTIVE_URL_FILE" ]]; then
-                    printf '%s\n' "$current" > "$EFFECTIVE_URL_FILE"
-                fi
-                rm -f "$header_file"
-                header_file=""
-                local size
-                size=$(wc -c < "$output")
-                _ok "  curl 成功 (${size}B)"
-                return 0
-            fi
-
-            if [[ "$code" =~ ^3[0-9][0-9]$ ]]; then
-                if [[ $hop -ge $MAX_REDIRECTS ]]; then
-                    rc=1
-                    break
-                fi
-                local location
-                location=$(awk 'tolower($0) ~ /^location:/ { sub(/^[^:]*:[[:space:]]*/, ""); sub(/\r$/, ""); print; exit }' "$header_file")
-                if [[ -z "$location" ]]; then
-                    rc=1
-                    break
-                fi
-                current=$(_resolve_url "$current" "$location") || { rc=1; break; }
-                hop=$((hop + 1))
-                continue
-            fi
-
-            rc=1
-            break
-        done
-
-        rm -f "$header_file"
-        header_file=""
+        meta=$("${args[@]}") || rc=$?
+        if [[ $rc -eq 0 ]] && _is_valid_file "$output"; then
+            FETCH_CONTENT_TYPE="$meta"
+            local size
+            size=$(wc -c < "$output")
+            _ok "  curl 引擎成功 (${size}B)"
+            return 0
+        fi
         [[ $rc -eq 2 ]] && return 2
-
         attempt=$((attempt + 1))
         [[ $attempt -le $MAX_ATTEMPTS ]] && sleep 1
     done
-
     return 1
 }
 

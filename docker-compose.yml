@@ -1,6 +1,6 @@
 services:
   smart3w-mcp:
-    # 默认 latest；生产建议固定版本，例如 SMART3W_IMAGE_TAG=v2.9.2 docker compose up -d
+    # 默认 latest；生产建议固定版本，例如 SMART3W_IMAGE_TAG=v2.11.0 docker compose up -d
     image: kid941005/smart3w-mcp:${SMART3W_IMAGE_TAG:-latest}
     container_name: smart3w-mcp
     restart: unless-stopped
@@ -39,6 +39,8 @@ services:
       SMART3W_ALLOW_SERVICE_WORKERS: ${SMART3W_ALLOW_SERVICE_WORKERS:-0}
       # smart3w_interact 保存登录 Cookie / localStorage 的目录（容器内路径）
       SMART3W_PROFILE_DIR: ${SMART3W_PROFILE_DIR:-/data/profiles}
+      # 后台任务状态持久化文件；挂载 /data/jobs 后重启不会丢失任务记录
+      SMART3W_JOB_STATE: ${SMART3W_JOB_STATE:-/data/jobs/jobs.json}
       # fetch / stealthy 使用的 Chrome 路径
       SMART3W_CHROME: ${SMART3W_CHROME:-/opt/google/chrome/chrome}
       # smart3w_interact 使用的 Chrome 路径（和上面是两个不同的环境变量名）
@@ -51,8 +53,10 @@ services:
     volumes:
       # 登录状态保存到当前目录下的 smart3w_profiles/，删容器/重建后仍在。
       # 容器以 uid 10001 运行，宿主机目录需可写：
-      #   sudo chown -R 10001:10001 ./smart3w_profiles
+      #   sudo chown -R 10001:10001 ./smart3w_profiles ./smart3w_data
       - ./smart3w_profiles:/data/profiles
+      # 任务状态持久化目录（uid 10001 需可写）
+      - ./smart3w_data:/data/jobs
     healthcheck:
       # SMART3W_HOST=0.0.0.0/:: 时本机回环探测 127.0.0.1；绑定具体地址时探测该地址
       test: ["CMD", "python3", "-c", "import socket,os; h=os.environ.get('SMART3W_HOST','0.0.0.0'); h='127.0.0.1' if h in ('0.0.0.0','::','') else h; socket.create_connection((h, int(os.environ.get('SMART3W_PORT','50826'))), 3).close()"]

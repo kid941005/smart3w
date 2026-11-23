@@ -75,7 +75,7 @@ def extract_links(
     links: list[dict[str, str]] = []
     seen: set[str] = set()
     for anchor in soup.find_all("a", href=True):
-        href = (anchor.get("href") or "").strip()
+        href = str(anchor.get("href") or "").strip()
         if not href or href.startswith(("#", "javascript:", "mailto:", "tel:", "data:")):
             continue
         absolute = urllib.parse.urljoin(base_url, href)

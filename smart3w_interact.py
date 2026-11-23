@@ -17,6 +17,7 @@ import shutil
 import sys
 import time
 from pathlib import Path
+from typing import Any, cast
 from urllib.parse import urlsplit
 
 from smart3w_url_utils import env_flag, proxy_url, ssrf_blocked, url_policy_error, url_shape_error
@@ -279,7 +280,7 @@ def _chrome_candidates() -> list[str]:
             str(Path(root) / "Google" / "Chrome" / "Application" / "chrome.exe")
             for root in roots if root
         ]
-    if os.name == "posix" and os.uname().sysname == "Darwin":
+    if sys.platform == "darwin":
         return ["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"]
     return []
 
@@ -415,7 +416,7 @@ def _execute_actions(
             remaining_ms = int((deadline - time.monotonic()) * 1000)
             if remaining_ms <= 0:
                 raise InteractionError("浏览器交互总时长超限", "INTERACTION_TIMEOUT")
-            timeout = remaining_ms if timeout is None else min(int(timeout), remaining_ms)
+            timeout = remaining_ms if timeout is None else min(int(cast(Any, timeout)), remaining_ms)
         try:
             if kind == "goto":
                 page.goto(str(action["url"]), wait_until="domcontentloaded", timeout=timeout)
@@ -439,7 +440,7 @@ def _execute_actions(
                 page.locator(str(action["selector"])).first.uncheck(timeout=timeout)
             elif kind == "wait":
                 if "ms" in action:
-                    page.wait_for_timeout(int(action["ms"]))
+                    page.wait_for_timeout(int(cast(Any, action["ms"])))
                 else:
                     page.locator(str(action["selector"])).first.wait_for(state="visible", timeout=timeout)
             elif kind == "wait_for_load":
@@ -453,12 +454,12 @@ def _execute_actions(
                 elif target == "bottom":
                     page.keyboard.press(end_key)
                 else:
-                    page.mouse.wheel(0, int(action.get("y", 0)))
+                    page.mouse.wheel(0, int(cast(Any, action.get("y", 0))))
         except Exception as exc:
             raise InteractionError(f"actions[{index}] ({kind}) 执行失败: {exc}", "ACTION_FAILED") from exc
 
         completed.append(kind)
-        extra_wait = int(action.get("wait_ms", default_wait_ms))
+        extra_wait = int(cast(Any, action.get("wait_ms", default_wait_ms)))
         if deadline is not None:
             extra_wait = min(extra_wait, max(0, int((deadline - time.monotonic()) * 1000)))
         if extra_wait > 0:

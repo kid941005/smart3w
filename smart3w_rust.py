@@ -15,6 +15,7 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
+from typing import Any, cast
 
 _DEFAULT_TIMEOUT = 90.0
 _DEFAULT_MAX_BYTES = 64 * 1024 * 1024
@@ -36,7 +37,7 @@ def _max_bytes() -> int:
 def _meta_int(value: object) -> int:
     """把 Rust meta 中的数字宽容地转成 int；非法值按 0 处理。"""
     try:
-        return int(value)  # type: ignore[arg-type]
+        return int(cast(Any, value))
     except (TypeError, ValueError):
         return 0
 

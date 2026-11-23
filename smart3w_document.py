@@ -185,10 +185,12 @@ def _max_document_bytes() -> int:
 
 def _pdf_to_markdown(path: Path) -> tuple[str, dict[str, Any]]:
     pypdf_error: Exception | None = None
+    PdfReader: Any = None
     try:
-        from pypdf import PdfReader
+        from pypdf import PdfReader as _ImportedPdfReader
+        PdfReader = _ImportedPdfReader
     except ImportError:
-        PdfReader = None  # type: ignore[assignment]
+        pass
 
     if PdfReader is not None:
         try:
@@ -354,19 +356,19 @@ def _extract_with_rust(kind: str, path: Path) -> tuple[str, dict[str, Any]] | No
     except OSError:
         return None
     if kind == "pdf":
-        result = smart3w_rust.pdf_to_markdown(data)
-        if result:
-            markdown, pages = result
+        pdf_result = smart3w_rust.pdf_to_markdown(data)
+        if pdf_result:
+            markdown, pages = pdf_result
             return markdown, {"pages": pages}
     elif kind == "xlsx":
-        result = smart3w_rust.xlsx_to_markdown(data)
-        if result:
-            markdown, sheets = result
+        xlsx_result = smart3w_rust.xlsx_to_markdown(data)
+        if xlsx_result:
+            markdown, sheets = xlsx_result
             return markdown, {"sheets": sheets}
     elif kind == "csv":
-        result = smart3w_rust.csv_to_markdown(data)
-        if result:
-            markdown, rows = result
+        csv_result = smart3w_rust.csv_to_markdown(data)
+        if csv_result:
+            markdown, rows = csv_result
             return markdown, {"rows": rows}
     return None
 

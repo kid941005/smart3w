@@ -144,7 +144,7 @@ def _dedupe_parts(parts):
         prev = part
 
     # 相邻列表项用单换行连接（紧凑列表），其余块用空行分隔
-    out = []
+    out: list[str] = []
     prev_is_list = False
     for part in lines:
         is_list = _is_list_item(part)
@@ -595,8 +595,8 @@ def search_web(query, count=10, instance=None, language="zh-CN", time_range="",
     if not isinstance(instance, str) or not instance.strip():
         instance = os.environ.get("SEARXNG_INSTANCE") or DEFAULT_INSTANCE
     instance = instance.strip()
-    errors = []
-    merged = {}
+    errors: list[str] = []
+    merged: dict[str, dict] = {}
     used_instance = None
     first_data = None
     deadline = time.monotonic() + SEARCH_TOTAL_TIMEOUT
@@ -745,9 +745,9 @@ def collect_sitemap_entries(sitemap_url, max_urls=50, recursive=False):
     if url_error:
         raise SitemapError(url_error)
 
-    entries = []
-    errors = []
-    visited = set()
+    entries: list[tuple[str, str, str]] = []
+    errors: list[str] = []
+    visited: set[str] = set()
     seen_urls = set()
     hit_limit = False
     queue = [(sitemap_url, 0)]

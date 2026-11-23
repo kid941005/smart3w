@@ -2,7 +2,7 @@
 
 [![OpenClaw](https://img.shields.io/badge/OpenClaw-Compatible-green)](https://github.com/openclaw/openclaw)
 [![MIT](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-2.10.0-blue)](https://github.com/kid941005/smart3w/releases)
+[![Version](https://img.shields.io/badge/Version-2.11.0-blue)](https://github.com/kid941005/smart3w/releases)
 
 集 **SearXNG 网页搜索**、**Sitemap 解析** 与 **智能网页抓取** 于一体。
 
@@ -124,7 +124,7 @@ smart3w-mcp
 启动时会在 stderr 打印一行 `INFO` 日志，包含版本号与构建信息，便于确认线上实际运行的版本：
 
 ```text
-2026-11-23 15:00:00 INFO smart3w: starting smart3w-mcp version=2.10.0 commit=unknown build_time=unknown transport=streamable-http endpoint=http://0.0.0.0:50826/mcp python=3.12.11
+2026-11-23 15:00:00 INFO smart3w: starting smart3w-mcp version=2.11.0 commit=unknown build_time=unknown transport=streamable-http endpoint=http://0.0.0.0:50826/mcp python=3.12.11
 ```
 
 `commit` / `build_time` 可在构建镜像时通过 `SMART3W_BUILD_COMMIT` / `SMART3W_BUILD_TIME` 构建参数注入；官方 CI 在 tag 构建时会自动注入当前 commit 与构建时间。
@@ -380,6 +380,7 @@ Smart3W 支持自动识别并优化提取微信公众号文章。
 | `SMART3W_CHROME` | 空（自动探测） | `fetch` / `stealthy` 使用的 Chrome 可执行文件路径 |
 | `SMART3W_CHROME_PATH` | 空（自动探测） | `smart3w_interact` 使用的 Chrome 路径；未设置时自动探测 |
 | `SMART3W_PROFILE_DIR` | `~/.smart3w/profiles` | 浏览器登录态 profile 存放目录；容器部署建议挂载持久卷 |
+| `SMART3W_JOB_STATE` | `~/.smart3w/jobs.json` | 后台任务状态持久化文件；容器部署建议挂载持久卷。重启后未完成任务标记为 `failed`，避免出现永远 `running` 的假象 |
 | `SMART3W_BROWSER_HEADLESS` | `1` | 浏览器是否无头运行（`1` / `0`） |
 | `SMART3W_BROWSER_NO_SANDBOX` | `0` | 是否给 Chrome 加 `--no-sandbox`；root 容器会自动启用。默认镜像为非 root；若容器内核限制 Chrome 沙箱导致 `smart3w_interact` 启动失败，可设为 `1`（会降低浏览器隔离） |
 | `SEARXNG_INSTANCE` | `https://searxng.example.com:59826` | SearXNG 地址（主实例；示例域名为占位） |
@@ -432,7 +433,7 @@ services:
       NO_PROXY: localhost,127.0.0.1,::1,searxng
 ```
 
-浏览器交互 profile 持久化示例（登录态在容器重建后仍保留）：
+浏览器交互 profile 与后台任务状态持久化示例（容器重建后登录态和任务记录仍保留）：
 
 ```yaml
 services:
@@ -440,18 +441,20 @@ services:
     shm_size: "1gb"
     environment:
       SMART3W_PROFILE_DIR: /data/profiles
+      SMART3W_JOB_STATE: /data/jobs/jobs.json
       SMART3W_CHROME_PATH: /opt/google/chrome/chrome
     volumes:
-      # 宿主机当前目录下的 smart3w_profiles/，与 docker-compose.yml 一致
+      # 宿主机当前目录下的 smart3w_profiles/、smart3w_data/，与 docker-compose.yml 一致
       - ./smart3w_profiles:/data/profiles
+      - ./smart3w_data:/data/jobs
 ```
 
-首次部署前建议先创建目录：`mkdir -p smart3w_profiles`。
+首次部署前建议先创建目录：`mkdir -p smart3w_profiles smart3w_data`。
 
 容器以非 root 用户运行（镜像内 uid/gid 默认 `10001:10001`），宿主机挂载目录需可写：
 
 ```bash
-sudo chown -R 10001:10001 ./smart3w_profiles
+sudo chown -R 10001:10001 ./smart3w_profiles ./smart3w_data
 ```
 
 也可用 `docker build --build-arg SMART3W_UID=<uid> --build-arg SMART3W_GID=<gid>` 对齐宿主机用户；或改用命名卷（named volume）由 Docker 管理属主。
@@ -474,7 +477,7 @@ SMART3W_HOST=127.0.0.1 SMART3W_PORT=50999 docker compose up -d
 
 ```dotenv
 # .env
-SMART3W_IMAGE_TAG=v2.10.0
+SMART3W_IMAGE_TAG=v2.11.0
 SMART3W_HOST=127.0.0.1
 SMART3W_PORT=50999
 ```
@@ -488,8 +491,8 @@ docker compose up -d
 `docker-compose.yml` 的镜像 tag 支持 `SMART3W_IMAGE_TAG`，默认 `latest`；生产环境建议固定版本，避免自动拉到不兼容的新版本：
 
 ```bash
-SMART3W_IMAGE_TAG=v2.10.0 docker compose pull
-SMART3W_IMAGE_TAG=v2.10.0 docker compose up -d
+SMART3W_IMAGE_TAG=v2.11.0 docker compose pull
+SMART3W_IMAGE_TAG=v2.11.0 docker compose up -d
 ```
 
 > **安全说明**：MCP 服务默认监听 `0.0.0.0:50826` 且无内置鉴权，部署到公网时请务必放在带认证/限流的
@@ -648,14 +651,26 @@ CI 会在 Python 3.10 / 3.12 上运行 lint、单元测试，并校验 wheel 中
 
 版本号唯一来源为 `smart3w_version.py`；`pyproject.toml` 使用 setuptools 动态版本读取该模块，README badge、SKILL.md 与 User-Agent 由 `tests/test_version.py` 校验一致性。
 
-架构上，MCP 的 `smart3w_search` / `smart3w_sitemap` 直接调用 `smart3w_core.py`，
-`smart3w_map` / `smart3w_crawl`（链接发现）与 `smart3w_extract`（字段抽取）复用
-`smart3w_discovery.py`；`smart3w_fetch` / `smart3w_crawl` 的页面抓取仍由 `fetch.sh` 执行
-Python HTTP/curl/scrapling 策略降级，`smart3w_interact` 使用 Playwright 驱动系统 Chrome 执行声明式动作，`smart3w_doctor` 仍需要 shell 环境检查。
+架构上，MCP 工具层集中在 `smart3w_mcp_tools/` 包（search/fetch/map/crawl/extract/jobs/interact/sitemap/doctor），
+`mcp_server.py` 保留运行时常量、抓取管线、任务管理与启动入口，并重新导出工具供注册与测试；
+`smart3w_search` / `smart3w_sitemap` 调用 `smart3w_core.py`，`smart3w_map` / `smart3w_crawl`（链接发现）与
+`smart3w_extract`（字段抽取）复用 `smart3w_discovery.py`；页面抓取的 SSRF/robots/重定向/代理逻辑统一由
+`scripts/smart3w_http.py` 实现（`fetch.sh` 仅做策略编排与薄封装），`smart3w_interact` 使用 Playwright
+驱动系统 Chrome 执行声明式动作，`smart3w_doctor` 仍需要 shell 环境检查。
 
 ---
 
 ## 📝 更新日志
+
+### 2.11.0
+
+- **架构（拆分 MCP 工具层）**：把原 1800 行的 `mcp_server.py` 拆为 `smart3w_mcp_tools/` 包（search/fetch/map/crawl/extract/jobs/interact/sitemap/doctor），`mcp_server.py` 保留运行时常量、抓取管线、任务管理与启动入口，并保持原有可 patch 名称与工具注册，外部行为不变。
+- **可靠性（异步任务持久化）**：后台任务状态写入 `SMART3W_JOB_STATE`（默认 `~/.smart3w/jobs.json`），重启后把未完成的 `queued`/`running` 任务标记为 `failed`，避免永久占用与假 running；`cancel_event` 等运行期对象不落盘。
+- **重构（抓取实现收敛）**：SSRF/robots/重定向/代理/下载上限等逻辑统一收敛到 `scripts/smart3w_http.py`，新增 `--engine curl`；`fetch.sh` 的 curl 策略改为薄封装，不再维护第二套逐跳安全策略。
+- **质量（类型检查）**：接入 `mypy`，覆盖主服务与工具包；CI 增加 `uv run mypy`。
+- **测试（真实浏览器）**：新增 Playwright 真实浏览器集成测试，覆盖点击/填写/跳转与 SSRF 守卫；无 Chrome 环境自动跳过。
+- **CI（Rust 门禁）**：CI 增加 `cargo build --release --locked` 与 `cargo test --release --locked`，防止 Rust sidecar 编译回归。
+- **部署**：`docker-compose.yml` 增加 `SMART3W_JOB_STATE` 与任务状态持久卷 `./smart3w_data:/data/jobs`。
 
 ### 2.10.0
 

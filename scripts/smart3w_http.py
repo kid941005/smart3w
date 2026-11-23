@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import argparse
 import os
+import subprocess
 import sys
+import tempfile
 import urllib.parse
 from pathlib import Path
 
@@ -142,7 +144,179 @@ def _write_body(output: str, chunks, max_bytes: int | None = None) -> None:
         raise
 
 
+def _parse_curl_headers(path: str) -> dict[str, str]:
+    """解析 curl -D 写出的响应头，只保留最后一组（跨重定向时）。"""
+    headers: dict[str, str] = {}
+    try:
+        text = Path(path).read_text(encoding="iso-8859-1", errors="replace")
+    except OSError:
+        return headers
+    for line in text.splitlines():
+        if not line.strip() or ":" not in line:
+            continue
+        name, value = line.split(":", 1)
+        name = name.strip().lower()
+        value = value.strip()
+        if name:
+            headers[name] = value
+    return headers
+
+
+def _fetch_with_curl(
+    url: str,
+    output: str | None = None,
+    *,
+    timeout: int = 15,
+    user_agent: str = DEFAULT_USER_AGENT,
+    max_redirects: int = 10,
+    effective_url_path: str | None = None,
+    respect_robots: bool = False,
+    validate_only: bool = False,
+) -> str:
+    """curl 引擎：与 httpx 引擎共用同一套逐跳 URL 策略和 robots 检查。"""
+    timeout = max(1, int(timeout))
+    max_redirects = max(0, int(max_redirects))
+    checker = RobotsChecker() if respect_robots and RobotsChecker is not None else None
+    max_bytes = _max_download_bytes()
+    accept = HTML_ACCEPT if env_flag("SMART3W_ACCEPT_HTML", False) else MARKDOWN_ACCEPT
+    current = url
+    for hop in range(max_redirects + 1):
+        blocked = _url_policy_error(current)
+        if blocked:
+            raise BlockedURLError(blocked)
+        if checker is not None and not checker.allows(current):
+            raise BlockedURLError(f"robots.txt 禁止抓取: {current}")
+        if not output and not validate_only:
+            raise ValueError("output 不能为空")
+        output_path = Path(output) if output else None
+        part_path = None
+        header_name = ""
+        if output_path is not None:
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            part_path = str(output_path) + ".part"
+        fd, header_name = tempfile.mkstemp(prefix="smart3w-curl-", suffix=".hdr")
+        os.close(fd)
+        cmd = [
+            "curl",
+            "-sS",
+            "-f",
+            "--compressed",
+            "--max-time",
+            str(timeout),
+            "--connect-timeout",
+            str(min(timeout, 10)),
+            "--proto",
+            "=http,https",
+            "--max-filesize",
+            str(max_bytes),
+            "-A",
+            user_agent,
+            "-H",
+            f"Accept: {accept}",
+            "-H",
+            "Accept-Language: zh-CN,zh;q=0.9,en;q=0.8",
+            "-H",
+            "Cache-Control: no-cache",
+            "-D",
+            header_name,
+            "-o",
+            part_path or os.devnull,
+            "-w",
+            "%{http_code}",
+        ]
+        proxy = _proxy_for(current)
+        if proxy:
+            cmd.extend(["--proxy", proxy])
+        if not env_flag("SMART3W_SSL_VERIFY", True):
+            cmd.append("-k")
+        if validate_only:
+            cmd.append("--head")
+        cmd.append(current)
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 5)
+        except FileNotFoundError as exc:
+            Path(header_name).unlink(missing_ok=True)
+            if part_path:
+                Path(part_path).unlink(missing_ok=True)
+            raise HTTPXUnavailable("curl 未安装，无法使用 curl 引擎") from exc
+        except subprocess.TimeoutExpired as exc:
+            Path(header_name).unlink(missing_ok=True)
+            if part_path:
+                Path(part_path).unlink(missing_ok=True)
+            raise TimeoutError(f"curl 抓取超时: {current}") from exc
+        code = (proc.stdout or "").strip()
+        headers = _parse_curl_headers(header_name)
+        Path(header_name).unlink(missing_ok=True)
+        if proc.returncode != 0:
+            if part_path:
+                Path(part_path).unlink(missing_ok=True)
+            if proc.returncode == 63:
+                raise DownloadTooLarge(f"响应体超过下载上限 {max_bytes} 字节")
+            raise RuntimeError(f"curl 抓取失败 rc={proc.returncode}: {proc.stderr.strip()}")
+        if code.startswith("3"):
+            location = headers.get("location")
+            if part_path:
+                Path(part_path).unlink(missing_ok=True)
+            if not location:
+                raise RuntimeError(f"重定向缺少 Location: {current}")
+            if hop >= max_redirects:
+                raise BlockedURLError(f"重定向次数超过上限 {max_redirects}")
+            current = urllib.parse.urljoin(current, location)
+            continue
+        if not code.startswith("2"):
+            if part_path:
+                Path(part_path).unlink(missing_ok=True)
+            raise RuntimeError(f"HTTP 抓取失败 status={code}: {current}")
+        if validate_only:
+            _write_effective(effective_url_path, current)
+            return ""
+        assert part_path is not None
+        os.replace(part_path, part_path[: -len(".part")])
+        _write_effective(effective_url_path, current)
+        return headers.get("content-type", "")
+    raise BlockedURLError(f"重定向次数超过上限 {max_redirects}")
+
+
 def fetch_url(
+    url: str,
+    output: str | None = None,
+    *,
+    timeout: int = 15,
+    user_agent: str = DEFAULT_USER_AGENT,
+    max_redirects: int = 10,
+    effective_url_path: str | None = None,
+    respect_robots: bool = False,
+    validate_only: bool = False,
+    engine: str = "python",
+) -> str:
+    """抓取 URL，返回最终响应的 Content-Type；失败抛异常。
+
+    engine=python 使用 httpx，engine=curl 使用 curl；两者的逐跳安全策略一致。
+    """
+    if engine == "curl":
+        return _fetch_with_curl(
+            url,
+            output,
+            timeout=timeout,
+            user_agent=user_agent,
+            max_redirects=max_redirects,
+            effective_url_path=effective_url_path,
+            respect_robots=respect_robots,
+            validate_only=validate_only,
+        )
+    return _fetch_with_httpx(
+        url,
+        output,
+        timeout=timeout,
+        user_agent=user_agent,
+        max_redirects=max_redirects,
+        effective_url_path=effective_url_path,
+        respect_robots=respect_robots,
+        validate_only=validate_only,
+    )
+
+
+def _fetch_with_httpx(
     url: str,
     output: str | None = None,
     *,
@@ -229,6 +403,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--effective-url", default=None)
     parser.add_argument("--respect-robots", action="store_true")
     parser.add_argument("--validate-only", action="store_true")
+    parser.add_argument("--engine", choices=["python", "curl"], default="python")
     parser.add_argument("--check-policy", action="store_true")
     parser.add_argument("--check-robots", action="store_true")
     parser.add_argument("--resolve-url", nargs=2, metavar=("BASE", "LOCATION"))
@@ -272,6 +447,7 @@ def main(argv: list[str] | None = None) -> int:
             effective_url_path=args.effective_url,
             respect_robots=respect_robots,
             validate_only=args.validate_only,
+            engine=args.engine,
         )
         if content_type:
             print(content_type)
@@ -284,6 +460,9 @@ def main(argv: list[str] | None = None) -> int:
         return 3
     except DownloadTooLarge as exc:
         print(f"抓取失败: {exc}", file=sys.stderr)
+        return 1
+    except TimeoutError as exc:
+        print(f"抓取超时: {exc}", file=sys.stderr)
         return 1
     except Exception as exc:
         if httpx is not None and isinstance(exc, httpx.TimeoutException):

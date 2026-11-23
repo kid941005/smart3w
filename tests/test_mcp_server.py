@@ -1,6 +1,7 @@
 """mcp_server 层测试：结构化返回、搜索缓存与 SSRF 拦截（无真实网络依赖）。"""
 
 import asyncio
+import subprocess
 import sys
 import threading
 import time
@@ -11,6 +12,19 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import mcp_server  # noqa: E402
+
+
+def test_cli_version_works_when_run_as_script():
+    """回归：直接 python mcp_server.py 启动时工具包不能再触发循环导入。"""
+    root = Path(__file__).resolve().parents[1]
+    proc = subprocess.run(
+        [sys.executable, str(root / "mcp_server.py"), "--version"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "smart3w" in proc.stdout
 
 
 def test_server_uses_mcpserver_api():

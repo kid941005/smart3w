@@ -68,13 +68,14 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY pyproject.toml README.md MANIFEST.in LICENSE ./
 COPY scripts/ ./scripts/
 COPY mcp_server.py smart3w_content.py smart3w_core.py smart3w_discovery.py smart3w_document.py smart3w_fetch_utils.py smart3w_interact.py smart3w_url_utils.py smart3w_rust.py smart3w_version.py ./
+COPY smart3w_mcp_tools/ ./smart3w_mcp_tools/
 
 # 从构建阶段复制 Rust 二进制
 COPY --from=rustbuild /build/rust/target/release/smart3w-rs /usr/local/bin/smart3w-rs
 
 RUN chmod +x scripts/fetch.sh && pip install --no-cache-dir --no-deps . \
-    && mkdir -p /data/profiles \
-    && chown -R smart3w:smart3w /app /data/profiles
+    && mkdir -p /data/profiles /data/jobs \
+    && chown -R smart3w:smart3w /app /data/profiles /data/jobs
 
 # --------------------------------------------------------------------------
 # Runtime

@@ -48,6 +48,15 @@ jobs:
       - name: Lint
         run: uv run ruff check .
 
+      - name: Type check
+        run: uv run mypy
+
+      - name: Build Rust sidecar
+        run: cargo build --release --locked --manifest-path rust/Cargo.toml
+
+      - name: Test Rust sidecar
+        run: cargo test --release --locked --manifest-path rust/Cargo.toml
+
       - name: Run unit tests
         run: uv run pytest -q
 

@@ -14,6 +14,7 @@ import urllib.parse
 import urllib.request
 import urllib.robotparser
 from collections import OrderedDict
+from typing import Any, cast
 
 from smart3w_url_utils import (  # noqa: F401  # 向后兼容：继续从本模块导出
     PRIVATE_NETWORKS,
@@ -173,18 +174,16 @@ class RobotsChecker:
         origin = host_part if port is None else f"{host_part}:{port}"
         key = (scheme, origin)
         now = time.monotonic()
-        missing = object()
+        cached = False
+        rp: urllib.robotparser.RobotFileParser | None = None
         with self._lock:
             entry = self._cache.get(key)
             if entry is not None:
                 ttl = self.ttl if entry[1] is not None else self.failure_ttl
                 if now - entry[0] <= ttl:
                     rp = entry[1]
-                else:
-                    rp = missing
-            else:
-                rp = missing
-        if rp is missing:
+                    cached = True
+        if not cached:
             rp = self._load(scheme, origin)
             self._cache_put(key, rp)
         if rp is None:
@@ -212,7 +211,7 @@ class DomainRateLimiter:
         with self._lock:
             now = time.monotonic()
             if domain not in self._last and len(self._last) >= self.max_entries:
-                oldest = min(self._last, key=self._last.get)
+                oldest = min(self._last, key=lambda item: self._last[item])
                 self._last.pop(oldest, None)
             last = self._last.get(domain, -float("inf"))
             delay = self.min_interval - (now - last)
@@ -236,7 +235,7 @@ def is_rate_limited(message: str) -> bool:
 def _nonneg_int(value: object, default: int = 0) -> int:
     """把输入安全地转换为非负整数；非法值回退默认值。"""
     try:
-        return max(0, int(value or 0))
+        return max(0, int(cast(Any, value) or 0))
     except (TypeError, ValueError):
         return default
 

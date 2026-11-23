@@ -90,7 +90,7 @@ def _curl_only_python(tmp_path):
     wrapper.write_text(
         "#!/usr/bin/env bash\n"
         'case " $* " in\n'
-        '  *" --check-policy "*|*" --resolve-url "*) '
+        '  *" --check-policy "*|*" --resolve-url "*|*" --engine curl "*) '
         f'exec "{Path(sys.executable).as_posix()}" "$@" ;;\n'
         "esac\n"
         "exit 1\n",

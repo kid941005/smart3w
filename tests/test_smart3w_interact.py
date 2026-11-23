@@ -183,6 +183,7 @@ def test_normalize_cookies():
 
 def test_run_interaction_reports_missing_playwright(monkeypatch):
     monkeypatch.setitem(sys.modules, "playwright", None)
+    monkeypatch.setitem(sys.modules, "playwright.sync_api", None)
     with pytest.raises(interact.InteractionError) as exc:
         interact.run_interaction("https://example.com/")
     assert exc.value.code == "BROWSER_UNAVAILABLE"
