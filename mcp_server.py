@@ -48,7 +48,7 @@ from smart3w_interact import (
 )
 from smart3w_url_utils import normalize_url, ssrf_blocked, url_policy_error, url_shape_error
 
-__version__ = "2.8.1"
+__version__ = "2.9.0"
 
 SERVER_DIR = Path(__file__).resolve().parent
 FETCH_SH = SERVER_DIR / "scripts" / "fetch.sh"
@@ -1668,7 +1668,14 @@ def smart3w_doctor(check_search: bool = False) -> dict[str, object]:
         output = _run_fetch(args)
     except FetchError as exc:
         return {"success": False, "error": str(exc), "error_code": exc.error_code}
-    return {"success": True, "output": output.strip()}
+    result: dict[str, object] = {"success": True, "output": output.strip()}
+    try:
+        import smart3w_rust
+
+        result["rust"] = smart3w_rust.doctor()
+    except Exception as exc:  # pragma: no cover - 诊断信息不应导致工具失败
+        result["rust"] = {"available": False, "error": str(exc)}
+    return result
 
 
 # ---------------------------------------------------------------------------

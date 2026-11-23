@@ -1,7 +1,7 @@
 ---
 name: smart3w
 description: 智能网页抓取路由 + SearXNG 搜索，支持 PDF/Office 文档解析、搜索即读、站点地图发现、递归抓取、CSS/XPath 结构化抽取与真实浏览器交互（点击/登录/翻页）。支持 4 种明确语义的抓取方式：get 使用 Python HTTP（逐跳 SSRF/robots，失败回退 curl），fetch 使用 scrapling extract fetch + --real-chrome，stealthy 使用 scrapling stealthy-fetch + --real-chrome，smart 按 Python HTTP → curl → fetch → stealthy 自动降级。支持并发批量抓取、URL 去重缓存、robots.txt 检查与按域名限速；搜索支持多 SearXNG 实例故障转移与语言/时间/分类/安全搜索/引擎参数。默认输出尽量为 Markdown：普通网页提取正文并尽量保留图片为 Markdown 图片链接，微信文章按正文段落输出并保留插图。
-version: 2.8.1
+version: 2.9.0
 license: MIT
 ---
 
@@ -45,6 +45,86 @@ license: MIT
 **压缩效果示例**：原始 HTML 512B → 提取后 126B（保留 24%）
 
 如需获取原始 HTML，使用 `--no-compress` 参数。
+
+## Rust 加速后端（可选）
+
+HTML→Markdown 抽取（普通网页 / 微信）、PDF 文本抽取、XLSX/CSV 表格渲染由独立 sidecar 二进制 `smart3w-rs` 加速；其余网络抓取仍由 Python 完成。二进制缺失、超时或返回 `ok:false` 时，`smart3w_rust.py` 自动回退纯 Python，功能不退化、不报错。
+
+### 调用入口
+
+- Python（`smart3w_rust.py`）：
+  - `binary_path()` / `available()`：解析二进制路径 / 是否可用
+  - `html_to_markdown(html)` / `wechat_to_markdown(html)` → `str | None`
+  - `pdf_to_markdown(pdf_bytes)` → `(markdown, pages) | None`
+  - `xlsx_to_markdown(xlsx_bytes)` → `(markdown, sheets) | None`
+  - `csv_to_markdown(csv_bytes)` → `(markdown, rows) | None`
+  - `doctor()` → `{available, path, mode, info?}`
+- 集成路径（正常使用无需直接调用二进制）：
+  - `smart3w_core.compress_html()` / `compress_wechat()` 先试 Rust，失败回退 readability-lxml / BeautifulSoup；
+  - `smart3w_document.extract_document_file()` 对 `.pdf` / `.xlsx|.xls` / `.csv` 先试 Rust，失败回退 Python；
+  - `smart3w_fetch`、`smart3w_search(read_top)`、`smart3w_crawl` 的正文压缩与文档解析自动受益。
+- 二进制 CLI（调试用，stdin 读原始字节，stdout 输出 JSON 信封）：
+
+```bash
+smart3w-rs version              # 或 --version
+smart3w-rs doctor               # {"ok":true,"version":"0.1.0","capabilities":["html2md",...]}
+smart3w-rs html2md   < page.html
+smart3w-rs wechat2md < article.html
+smart3w-rs pdf2md    < file.pdf
+smart3w-rs xlsx2md   < book.xlsx
+smart3w-rs csv2md    < data.csv
+```
+
+### 参数与环境变量
+
+开关与路径见下文「环境变量」表的 `SMART3W_RUST` / `SMART3W_RS_BIN`。自动探测顺序：`SMART3W_RS_BIN` → `<包目录>/smart3w_rs/` → `<包目录>/bin/` → `<包目录>/rust/target/release|debug/` → `PATH` 中的 `smart3w-rs`（Windows 为 `smart3w-rs.exe`）。
+
+### 输入输出示例
+
+```bash
+$ printf '<h1>Hi</h1><p>Hello <b>world</b></p>' | smart3w-rs html2md
+{"markdown":"Hi\n==========\n\nHello **world**","meta":{"chars":30,"title":""},"ok":true}
+```
+
+失败示例（调用方据此回退）：
+
+```json
+{"ok":false,"error":"no extractable text (scanned/image PDF?)"}
+```
+
+```python
+from smart3w_rust import pdf_to_markdown
+
+result = pdf_to_markdown(open("a.pdf", "rb").read())
+if result:                      # None 表示应回退纯 Python
+    markdown, pages = result
+```
+
+### 构建与运行前提
+
+- 本机源码运行（需 Rust 工具链）：
+
+```bash
+cd rust
+cargo build --release --locked
+# 产物：rust/target/release/smart3w-rs（Windows 为 smart3w-rs.exe），smart3w_rust.py 会自动发现
+```
+
+- Docker：`Dockerfile` 多阶段构建（`rust:1-slim-bookworm` 编译 → `python:3.12-slim-bookworm` 运行），镜像自带 `/usr/local/bin/smart3w-rs`，无需额外卷或 env。
+- `--locked` 依赖 `rust/Cargo.lock` 随源码一并提交；缺失时 Docker 构建会失败。
+- DOCX / PPTX 不在本二进制范围，仍由 Python 解析。
+- 关闭加速：设 `SMART3W_RUST=off`。
+
+### 常见失败与排查
+
+| 现象 | 原因 | 处理 |
+| --- | --- | --- |
+| doctor 显示 Rust 未启用 / `rust.available=false` | 二进制不在候选路径或 `SMART3W_RUST=off` | 设 `SMART3W_RS_BIN`，或构建到 `rust/target/release/` |
+| Docker 构建 `cargo build --release --locked` 失败 | 未提交 `rust/Cargo.lock`，或拉取 crate 失败 | 提交 lock 文件；检查构建网络/代理 |
+| PDF 返回 `no extractable text (scanned/image PDF?)` | 扫描件无文本层 | 改用 OCR，或接受 Python 回退的同一错误 |
+| 大文件超时 | 子进程超时 90s | 拆分/压缩输入；失败会自动回退纯 Python |
+| 懒加载图片丢失 | Rust 产物不含 `![](` 且 HTML 有 data-src | 已自动回退纯 Python，无需处理 |
+| doctor 的 `rust` 字段报错 | `smart3w_rust` 导入异常 | 查看 `rust.error`，确认文件随包安装 |
 
 ## 使用方法
 
@@ -95,7 +175,7 @@ license: MIT
 | `smart3w_job` | 查询或取消后台 crawl 任务 |
 | `smart3w_interact` | 真实浏览器交互：点击 / 填写 / 登录 / 翻页，支持 Cookie 与持久化 profile |
 | `smart3w_sitemap` | Sitemap / Sitemap Index 解析（可选 `recursive` 递归展开） |
-| `smart3w_doctor` | 运行依赖与环境自检 |
+| `smart3w_doctor` | 运行依赖与环境自检（含 Rust 加速后端状态） |
 
 > `smart3w_search` / `smart3w_sitemap` 直接调用 `smart3w_core.py`；
 > `smart3w_map` / `smart3w_extract` 与递归 crawl 的链接发现复用 `smart3w_discovery.py`；
@@ -105,7 +185,7 @@ license: MIT
 
 **搜索即读**：`smart3w_search(read_top=2, content_max_chars=5000)` 会在搜索后直接抓取前 2 条结果正文；每条结果增加 `content`、`content_truncated`、`content_total_length`、`effective_url`、`read_error`、`read_error_code`，顶层增加 `read_top`、`read_succeeded`、`read_failed`。
 
-**文档解析**：`smart3w_fetch` 自动把 PDF、DOCX、XLSX、PPTX 解析为 Markdown；结果增加 `format`、`pages`、`sheets`、`slides`、`paragraphs`、`tables`、`chars`、`document`。旧版 Office 文件和扫描版 PDF 会返回明确错误。
+**文档解析**：`smart3w_fetch` 自动把 PDF、DOCX、XLSX、PPTX 解析为 Markdown；结果增加 `format`、`pages`、`sheets`、`slides`、`paragraphs`、`tables`、`chars`、`document`。旧版 Office 文件和扫描版 PDF 会返回明确错误。PDF / XLSX / CSV 在 Rust 后端可用时优先由 `smart3w-rs` 解析，失败自动回退纯 Python。
 
 **正文筛选与缓存新鲜度**：`smart3w_fetch(query="关键词", max_tokens=2000, max_age_seconds=60)` 只保留最相关段落并控制上下文预算（4 字符≈1 token），同时限制缓存年龄；`max_age_seconds=0` 强制跳过缓存，命中时返回 `cache_age`。
 
@@ -173,7 +253,7 @@ license: MIT
 ./scripts/fetch.sh doctor --check-search
 ```
 
-用于检查 `curl`、Python 解释器（`SMART3W_PYTHON`，默认 `python3`）、`scrapling`、Python 模块 `httpx` / `readability` / `bs4`，以及自动探测到的 Chrome 是否可用。
+用于检查 `curl`、Python 解释器（`SMART3W_PYTHON`，默认 `python3`）、`scrapling`、Python 模块 `httpx` / `readability` / `bs4`，以及自动探测到的 Chrome、Rust 加速后端（`smart3w-rs`）是否可用。
 
 传入 `--check-search` 时，还会额外检查 `SEARXNG_INSTANCE` 的连通性；该检查会发起真实网络请求。
 
@@ -215,6 +295,8 @@ license: MIT
 | `SMART3W_HOST` | `0.0.0.0` | MCP HTTP 监听地址 |
 | `SMART3W_PORT` | `50826` | MCP HTTP 服务端口 |
 | `SMART3W_TIMEOUT` | `30` | MCP 层默认请求超时（秒） |
+| `SMART3W_RUST` | `auto` | Rust 加速后端开关：`auto` / `on` / `off` |
+| `SMART3W_RS_BIN` | 空（自动探测） | Rust 二进制路径；Docker 镜像为 `/usr/local/bin/smart3w-rs` |
 | `SMART3W_CACHE_TTL` | `300` | 抓取结果缓存有效期（秒） |
 | `SMART3W_CACHE_SIZE` | `64` | 抓取结果缓存最大条目数（LRU 淘汰） |
 | `SMART3W_RESPECT_ROBOTS` | `0` | 单个 `smart3w_fetch` 是否默认遵守 robots.txt（`smart3w_crawl` 默认开启） |

@@ -40,6 +40,9 @@ smart3w_profiles/
 # CodeGraph local index
 .codegraph/
 
+# Rust build output
+rust/target/
+
 # Tool caches
 .ruff_cache/
 .dsh-project-memory/

@@ -85,6 +85,18 @@ def _is_list_item(part):
     )
 
 
+def _normalize_markdown_lists(text):
+    """把 Markdown 无序列表符号统一为 '-'，保持缩进层级。"""
+    lines = []
+    for line in text.split("\n"):
+        stripped = line.lstrip()
+        indent = line[: len(line) - len(stripped)]
+        if stripped.startswith("* "):
+            line = indent + "- " + stripped[2:]
+        lines.append(line)
+    return "\n".join(lines)
+
+
 def _dedupe_parts(parts):
     """去除空段落、重复图片与连续重复文本，输出单块 Markdown 文本。"""
     lines = []
@@ -280,13 +292,35 @@ def _extract_blocks(container, wechat=False):
 def compress_html(input_path, output_path):
     """使用 readability-lxml 提取正文并转为 Markdown（保留链接/列表/表格/代码块）；成功返回 True。"""
     try:
-        from bs4 import BeautifulSoup
-        from readability import Document
-
         with open(input_path, "r", encoding="utf-8", errors="ignore") as f:
             html = f.read()
         if not html.strip():
             return False
+
+        try:
+            from smart3w_rust import html_to_markdown as _rust_html_to_markdown
+
+            rust_markdown = _rust_html_to_markdown(html)
+        except Exception:
+            rust_markdown = None
+        # 懒加载图片使用 data-src/data-original，html2md 只识别 src；
+        # 若 Rust 产物丢失了这些图片则回退纯 Python，保证图片不丢
+        lazy_images = ("data-src" in html or "data-original" in html)
+        if rust_markdown and not (lazy_images and "![](" not in rust_markdown):
+            # Rust 产物统一走列表符号规范化 + 去重，与纯 Python 输出格式保持一致
+            parts = [
+                _normalize_markdown_lists(part)
+                for part in rust_markdown.split("\n\n")
+                if part.strip()
+            ]
+            text = _dedupe_parts(parts)
+            if text:
+                with open(output_path, "w", encoding="utf-8") as f:
+                    f.write(text + "\n")
+                return True
+
+        from bs4 import BeautifulSoup
+        from readability import Document
 
         doc = Document(html)
         title = (doc.title() or "").strip()
@@ -319,12 +353,33 @@ def compress_html(input_path, output_path):
 def compress_wechat(input_path, output_path):
     """微信文章专用提取（js_content / rich_media_content）；成功返回 True。"""
     try:
-        from bs4 import BeautifulSoup
-
         with open(input_path, "r", encoding="utf-8", errors="ignore") as f:
             html = f.read()
         if not html.strip():
             return False
+
+        try:
+            from smart3w_rust import wechat_to_markdown as _rust_wechat_to_markdown
+
+            rust_markdown = _rust_wechat_to_markdown(html)
+        except Exception:
+            rust_markdown = None
+        lazy_images = ("data-src" in html or "data-original" in html)
+        if rust_markdown and len(rust_markdown) > 50 and not (
+            lazy_images and "![](" not in rust_markdown
+        ):
+            parts = [
+                _normalize_markdown_lists(part)
+                for part in rust_markdown.split("\n\n")
+                if part.strip()
+            ]
+            text = _dedupe_parts(parts)
+            if text and len(text) > 50:
+                with open(output_path, "w", encoding="utf-8") as f:
+                    f.write(text + "\n")
+                return True
+
+        from bs4 import BeautifulSoup
 
         soup = BeautifulSoup(html, "html.parser")
         for tag in soup.find_all(SKIP_TAGS):

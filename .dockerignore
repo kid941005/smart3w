@@ -16,3 +16,4 @@ build
 .env
 *.log
 smart3w_profiles
+rust/target

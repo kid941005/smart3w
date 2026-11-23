@@ -2,7 +2,7 @@
 
 [![OpenClaw](https://img.shields.io/badge/OpenClaw-Compatible-green)](https://github.com/openclaw/openclaw)
 [![MIT](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-2.8.1-blue)](https://github.com/kid941005/smart3w/releases)
+[![Version](https://img.shields.io/badge/Version-2.9.0-blue)](https://github.com/kid941005/smart3w/releases)
 
 集 **SearXNG 网页搜索**、**Sitemap 解析** 与 **智能网页抓取** 于一体。
 
@@ -14,7 +14,8 @@
 |------|------|
 | 🔍 **网页搜索** | SearXNG 驱动，隐私友好 |
 | 📄 **网页抓取** | 分层策略架构，稳定可靠 |
-| 📚 **文档解析** | PDF / Word / Excel / PowerPoint 自动转 Markdown |
+| 📚 **文档解析** | PDF / Word / Excel / PowerPoint / CSV 自动转 Markdown |
+| ⚡ **Rust 加速** | 可选 sidecar 二进制加速 HTML→Markdown / PDF / XLSX / CSV，缺失或失败自动回退纯 Python |
 | 🧾 **搜索即读** | 可选直接读取前 N 条搜索结果的正文 |
 | 🚀 **批量/递归抓取** | `smart3w_crawl` 并发抓取显式 URL，或从 seed_url 按深度 BFS 递归抓取 |
 | 🗺️ **站点发现** | `smart3w_map` 合并 sitemap、首页链接与可选搜索结果，快速盘点站点 URL |
@@ -482,14 +483,39 @@ smart3w/
 ├── smart3w_interact.py     # 真实浏览器交互：动作白名单 / Cookie / profile / SSRF 请求拦截
 ├── smart3w_fetch_utils.py  # 抓取治理：TTL 缓存 / robots / 限速
 ├── smart3w_url_utils.py    # 公共 URL 工具：规范化 / 追踪参数 / SSRF 检查
+├── smart3w_rust.py         # Rust 后端桥接（子进程 + JSON 信封，失败回退纯 Python）
+├── rust/                   # Rust sidecar 源码（HTML→Markdown / PDF / XLSX / CSV）
 ├── .github/workflows/      # CI（lint + 测试 + 打包）与 Docker 发布
-├── tests/                  # 单元测试（pytest，193 例）
+├── tests/                  # 单元测试（pytest，204 例）
 └── scripts/
     ├── fetch.sh            # 统一入口脚本（搜索 / 抓取 / Sitemap）
     ├── document_extract.py # 文档解析 CLI（PDF / Office → Markdown）
     ├── smart3w_http.py     # 轻量 HTTP 抓取：逐跳 SSRF/robots + Accept Markdown + 代理
     └── smart3w_utils.py    # 共享 Python 逻辑（搜索 / Sitemap / 正文压缩）
 ```
+
+---
+
+## Rust 加速后端（可选）
+
+HTML→Markdown 抽取、PDF 文本抽取、XLSX/CSV 表格渲染是少数 CPU 密集环节，仓库内置一个
+独立 Rust sidecar 二进制 `smart3w-rs` 来加速它们；其余网络抓取仍由 Python 完成。
+
+- **调用方式**：`smart3w_rust.py` 通过子进程 + JSON 信封调用二进制，**二进制缺失、超时或返回失败时自动回退纯 Python**，功能不退化、不报错。
+- **覆盖范围**：`html2md`（readability / 微信正文）、`pdf2md`、`xlsx2md`、`csv2md`、`doctor`、`version`。DOCX/PPTX 仍走 Python。
+- **环境变量**：
+  - `SMART3W_RUST`：`auto`（默认，有二进制就用）/ `on` / `off`（强制纯 Python）。
+  - `SMART3W_RS_BIN`：显式指定二进制路径（Docker 中已设为 `/usr/local/bin/smart3w-rs`）。
+- **构建**（需要 Rust 工具链，`rustup` 安装）：
+
+```bash
+cd rust
+cargo build --release
+# 产物：rust/target/release/smart3w-rs（Windows 为 smart3w-rs.exe）
+```
+
+- **Docker**：`Dockerfile` 使用多阶段构建（`rust:1-slim-bookworm` 编译 → `python:3.12-slim-bookworm` 运行），最终镜像自动带上二进制。
+- **自检**：`smart3w_doctor()` 的返回新增 `rust` 字段，显示后端是否可用、路径与版本信息。
 
 ---
 
@@ -513,6 +539,18 @@ Python HTTP/curl/scrapling 策略降级，`smart3w_interact` 使用 Playwright �
 ---
 
 ## 📝 更新日志
+
+### 2.9.0
+
+- **新增（Rust 加速后端）**：内置独立 Rust sidecar 二进制 `smart3w-rs`，用于 CPU 密集环节：
+  - `html2md` / `wechat2md`：scraper 选主内容容器 + html2md 渲染，替代纯 Python readability 路径
+  - `pdf2md`：pdf-extract 抽取文本 + lopdf 统计页数
+  - `xlsx2md` / `csv2md`：calamine 读表格、csv 解析，统一渲染 Markdown 表格
+- **零风险降级**：新增 `smart3w_rust.py` 桥接层（子进程 + JSON 信封），二进制缺失/超时/失败时自动回退纯 Python；`SMART3W_RUST=auto|on|off` 与 `SMART3W_RS_BIN` 控制
+- **CSV 支持**：`smart3w_document` 新增 CSV 识别与解析（`text/csv`、`application/csv`、`.csv`），`fetch.sh` 文档路径同步支持
+- **Docker**：`Dockerfile` 改为多阶段构建（Rust 编译阶段 → Python 运行阶段），镜像自带二进制
+- **自检**：`smart3w_doctor` 返回新增 `rust` 字段（可用性 / 路径 / 版本）
+- **测试**：新增 `tests/test_smart3w_rust.py` 与 `tests/test_document_csv.py`
 
 ### 2.8.1
 

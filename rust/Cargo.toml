@@ -1,0 +1,29 @@
+[package]
+name = "smart3w-rs"
+version = "0.1.0"
+edition = "2021"
+description = "Rust acceleration backend for Smart3W: HTML->Markdown, PDF, XLSX/CSV parsing"
+license = "MIT"
+publish = false
+
+[[bin]]
+name = "smart3w-rs"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+html2md = "0.2"
+scraper = "0.20"
+pdf-extract = "0.8"
+lopdf = "0.34"
+calamine = "0.26"
+csv = "1"
+# 固定 zip 版本：zip 2.6 改变了 ZipFile 泛型签名，calamine 0.26 尚未适配
+zip = { version = "=2.5.0", default-features = false, features = ["deflate"] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true

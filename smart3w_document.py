@@ -2,10 +2,11 @@
 """PDF / Office 文档解析，统一输出 Markdown。
 
 支持的格式：
-- PDF（pypdf，缺失时回退 pdfplumber）
+- PDF（优先 Rust 后端，回退 pypdf/pdfplumber）
 - DOCX（python-docx）
-- XLSX（openpyxl）
+- XLSX（优先 Rust 后端，回退 openpyxl）
 - PPTX（python-pptx）
+- CSV（优先 Rust 后端，回退标准库 csv）
 
 旧版二进制 .doc/.xls/.ppt 不在支持范围内，会给出明确错误，而不是把二进制当网页压缩。
 """
@@ -32,6 +33,8 @@ _CONTENT_TYPE_KIND = {
     "application/msword": "doc",
     "application/vnd.ms-excel": "xls",
     "application/vnd.ms-powerpoint": "ppt",
+    "text/csv": "csv",
+    "application/csv": "csv",
 }
 
 _EXTENSION_KIND = {
@@ -42,6 +45,7 @@ _EXTENSION_KIND = {
     ".doc": "doc",
     ".xls": "xls",
     ".ppt": "ppt",
+    ".csv": "csv",
 }
 
 
@@ -101,6 +105,9 @@ def detect_kind(path: str | Path, content_type: str = "", url: str = "") -> str 
     declared = _CONTENT_TYPE_KIND.get(_content_type_base(content_type))
     if declared:
         return declared
+    by_path = _EXTENSION_KIND.get(source.suffix.lower())
+    if by_path:
+        return by_path
     return _EXTENSION_KIND.get(_url_suffix(url))
 
 
@@ -276,10 +283,68 @@ def _pptx_to_markdown(path: Path) -> tuple[str, dict[str, Any]]:
     return "\n\n".join(slides), {"slides": len(slides)}
 
 
+def _csv_to_markdown(path: Path) -> tuple[str, dict[str, Any]]:
+    import csv as _csv
+
+    rows: list[list[str]] = []
+    try:
+        with path.open("r", encoding="utf-8-sig", errors="replace", newline="") as handle:
+            for record in _csv.reader(handle):
+                values = [value.replace("|", "\\|").replace("\n", "<br>") for value in record]
+                while values and not values[-1]:
+                    values.pop()
+                if any(values):
+                    rows.append(values)
+    except OSError as exc:  # pragma: no cover
+        raise DocumentError(f"CSV 解析失败: {exc}") from exc
+    if not rows:
+        raise DocumentError("CSV 未提取到内容")
+    width = max(len(row) for row in rows)
+    for row in rows:
+        row.extend([""] * (width - len(row)))
+    lines = [
+        "| " + " | ".join(rows[0]) + " |",
+        "| " + " | ".join(["---"] * width) + " |",
+    ]
+    lines.extend("| " + " | ".join(row) + " |" for row in rows[1:])
+    return "\n".join(lines), {"rows": len(rows) - 1}
+
+
+def _extract_with_rust(kind: str, path: Path) -> tuple[str, dict[str, Any]] | None:
+    """尝试用 Rust 后端解析文档；不可用或失败时返回 None，由调用方回退纯 Python。"""
+    try:
+        import smart3w_rust
+    except Exception:
+        return None
+    if not smart3w_rust.available():
+        return None
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return None
+    if kind == "pdf":
+        result = smart3w_rust.pdf_to_markdown(data)
+        if result:
+            markdown, pages = result
+            return markdown, {"pages": pages}
+    elif kind == "xlsx":
+        result = smart3w_rust.xlsx_to_markdown(data)
+        if result:
+            markdown, sheets = result
+            return markdown, {"sheets": sheets}
+    elif kind == "csv":
+        result = smart3w_rust.csv_to_markdown(data)
+        if result:
+            markdown, rows = result
+            return markdown, {"rows": rows}
+    return None
+
+
 _EXTRACTORS = {
     "docx": _docx_to_markdown,
     "xlsx": _xlsx_to_markdown,
     "pptx": _pptx_to_markdown,
+    "csv": _csv_to_markdown,
 }
 
 
@@ -299,7 +364,10 @@ def extract_document_file(
     if kind in {"doc", "xls", "ppt"}:
         raise DocumentError(f"暂不支持旧版 Office .{kind} 文件，请另存为 .{kind}x 后重试")
 
-    if kind == "pdf":
+    extracted = _extract_with_rust(kind, source)
+    if extracted is not None:
+        markdown, meta = extracted
+    elif kind == "pdf":
         markdown, meta = _pdf_to_markdown(source)
     else:
         extractor = _EXTRACTORS.get(kind)

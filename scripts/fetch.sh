@@ -422,6 +422,19 @@ _doctor() {
     _doctor_check_python_module openpyxl || failed=1
     _doctor_check_python_module pptx || failed=1
 
+    # Rust 后端是可选项：缺失时自动回退纯 Python，因此不计入 failed
+    local project_root
+    project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+    if PYTHONPATH="$project_root${PYTHONPATH:+:$PYTHONPATH}" "$PYTHON_BIN" - <<'PY' >/dev/null 2>&1
+import smart3w_rust
+raise SystemExit(0 if smart3w_rust.doctor().get("available") else 1)
+PY
+    then
+        _ok "Rust 后端已启用（HTML/PDF/XLSX/CSV 加速）"
+    else
+        _ok "Rust 后端未启用（自动回退纯 Python）"
+    fi
+
     local chrome
     if chrome=$(_find_chrome); then
         _ok "Chrome: $chrome"
@@ -482,14 +495,14 @@ _maybe_document() {
     local content_type="${3:-}"
 
     case "${content_type%%;*}" in
-        application/pdf|application/vnd.openxmlformats-officedocument.*|application/msword|application/vnd.ms-excel|application/vnd.ms-powerpoint)
+        application/pdf|application/vnd.openxmlformats-officedocument.*|application/msword|application/vnd.ms-excel|application/vnd.ms-powerpoint|text/csv|application/csv)
             return 0
             ;;
     esac
 
     local path_only="${url%%\?*}"
     case "$path_only" in
-        *.pdf|*.PDF|*.docx|*.DOCX|*.xlsx|*.XLSX|*.pptx|*.PPTX|*.doc|*.DOC|*.xls|*.XLS|*.ppt|*.PPT)
+        *.pdf|*.PDF|*.docx|*.DOCX|*.xlsx|*.XLSX|*.pptx|*.PPTX|*.doc|*.DOC|*.xls|*.XLS|*.ppt|*.PPT|*.csv|*.CSV)
             return 0
             ;;
     esac

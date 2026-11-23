@@ -4,6 +4,14 @@
 # Run:   docker run -p 50826:50826 -e SEARXNG_INSTANCE=... smart3w-mcp
 # =============================================================================
 
+# ---------- Rust 加速后端构建阶段 ----------
+# 编译独立 sidecar 二进制（HTML→Markdown / PDF / XLSX / CSV），
+# 运行时由 smart3w_rust.py 通过子进程调用；缺失时自动回退纯 Python。
+FROM rust:1-slim-bookworm AS rustbuild
+WORKDIR /build
+COPY rust/ ./rust/
+RUN cd rust && cargo build --release --locked
+
 FROM python:3.12-slim-bookworm
 
 ENV PYTHONUNBUFFERED=1 \
@@ -46,7 +54,10 @@ RUN pip install --no-cache-dir -r requirements.txt
 # --------------------------------------------------------------------------
 COPY pyproject.toml README.md MANIFEST.in LICENSE ./
 COPY scripts/ ./scripts/
-COPY mcp_server.py smart3w_content.py smart3w_core.py smart3w_discovery.py smart3w_document.py smart3w_fetch_utils.py smart3w_interact.py smart3w_url_utils.py ./
+COPY mcp_server.py smart3w_content.py smart3w_core.py smart3w_discovery.py smart3w_document.py smart3w_fetch_utils.py smart3w_interact.py smart3w_url_utils.py smart3w_rust.py ./
+
+# 从构建阶段复制 Rust 二进制
+COPY --from=rustbuild /build/rust/target/release/smart3w-rs /usr/local/bin/smart3w-rs
 
 RUN chmod +x scripts/fetch.sh && pip install --no-cache-dir --no-deps .
 
@@ -57,6 +68,7 @@ ENV SEARXNG_INSTANCE=https://searxng.example.com:59826
 ENV SMART3W_HOST=0.0.0.0
 ENV SMART3W_PORT=50826
 ENV SMART3W_TIMEOUT=30
+ENV SMART3W_RS_BIN=/usr/local/bin/smart3w-rs
 
 EXPOSE 50826
 
