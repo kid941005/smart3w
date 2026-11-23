@@ -16,7 +16,13 @@ import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 
-from smart3w_url_utils import PolicyRedirectHandler, env_flag, normalize_url, url_policy_error
+from smart3w_url_utils import (
+    PolicyRedirectHandler,
+    env_flag,
+    normalize_url,
+    url_policy_error,
+    url_shape_error,
+)
 
 DEFAULT_INSTANCE = "https://searxng.example.com:59826"
 SEARCH_TIMEOUT = 30
@@ -64,6 +70,27 @@ def _open_sitemap(req):
         urllib.request.HTTPSHandler(context=_ssl_context()),
     )
     return opener.open(req, timeout=SITEMAP_TIMEOUT)
+
+
+class _SearchRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """SearXNG 重定向处理器：只校验 URL 形状与协议，不拦截私网实例。"""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        blocked = url_shape_error(newurl, max_length=65536)
+        if blocked:
+            raise urllib.error.HTTPError(
+                newurl, 403, f"搜索重定向目标被拒绝: {blocked}", headers, fp
+            )
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _open_search(req):
+    """用带 URL 形状校验的 opener 打开 SearXNG 请求（不做私网拦截）。"""
+    opener = urllib.request.build_opener(
+        _SearchRedirectHandler(),
+        urllib.request.HTTPSHandler(context=_ssl_context()),
+    )
+    return opener.open(req, timeout=SEARCH_TIMEOUT)
 
 
 def _img_markdown(node, attrs=IMAGE_ATTRS):
@@ -453,8 +480,9 @@ def _as_list(value):
 def _fetch_search(instance, query, count, language, time_range, categories, safesearch,
                   engines, pageno=1):
     """请求单个 SearXNG 实例，返回原始 JSON。"""
-    if not instance.startswith(("http://", "https://")):
-        raise ValueError(f"实例地址必须是 http/https: {instance}")
+    shape_error = url_shape_error(instance, max_length=8192)
+    if shape_error:
+        raise ValueError(f"实例地址无效: {shape_error}")
     params = {"q": query, "format": "json"}
     if language:
         params["language"] = language
@@ -473,7 +501,7 @@ def _fetch_search(instance, query, count, language, time_range, categories, safe
         url,
         headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
     )
-    with urllib.request.urlopen(req, context=_ssl_context(), timeout=SEARCH_TIMEOUT) as resp:
+    with _open_search(req) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
 

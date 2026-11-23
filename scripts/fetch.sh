@@ -112,6 +112,22 @@ _is_valid_file() {
     [[ -s "$1" ]] && [[ -r "$1" ]]
 }
 
+# 抓取完成后复检最终 URL（浏览器内部重定向无法逐跳拦截，只能事后校验）。
+# 未配置 --effective-url 或侧车为空时跳过；策略检查失败按安全拒绝返回 2。
+_verify_effective_url() {
+    [[ -n "$EFFECTIVE_URL_FILE" ]] || return 0
+    [[ -s "$EFFECTIVE_URL_FILE" ]] || return 0
+    local effective=""
+    IFS= read -r effective < "$EFFECTIVE_URL_FILE" || true
+    [[ -n "$effective" ]] || return 0
+    local rc=0
+    _policy_check_url "$effective" || rc=$?
+    if [[ $rc -ne 0 ]]; then
+        _warn "最终 URL 未通过安全策略检查: $effective"
+    fi
+    return $rc
+}
+
 # 在进入任何抓取策略前做一次统一 URL 策略预检（allowlist / SSRF）。
 # 仅 rc=0 放行；rc=2 或辅助脚本执行异常（含 Python/httpx 不可用）一律拒绝，
 # 避免安全检查失效时 fail-open 直接抓取。
@@ -149,11 +165,19 @@ _resolve_url() {
 # 有 timeout 命令时加上超时限制，没有时直接执行（提升 macOS 等环境兼容性）
 _run_with_timeout() {
     local seconds="$1"; shift
-    if command -v timeout >/dev/null 2>&1; then
-        timeout "$seconds" "$@"
-    else
-        "$@"
-    fi
+    # MSYS/Cygwin 的 timeout 是原生 Windows 程序，会把子进程参数按 Windows 规则重解析，
+    # 导致 /tmp/... 这类 MSYS 路径在 Python 子进程里变成 D:\tmp\...。浏览器路径改为
+    # 依赖 scrapling 自身的 --timeout-ms，避免侧车文件写错位置。
+    case "${OSTYPE:-}" in
+        msys*|cygwin*) "$@" ;;
+        *)
+            if command -v timeout >/dev/null 2>&1; then
+                timeout "$seconds" "$@"
+            else
+                "$@"
+            fi
+            ;;
+    esac
 }
 
 # =============================================================================
@@ -293,14 +317,23 @@ _fetch_by_scrapling() {
     local attempt=1
 
     _info "策略2: scrapling HTTP..."
-    local -a cmd=(scrapling extract fetch "$url" "$output" --real-chrome)
+    # 使用内置包装器：保留 DynamicFetcher 行为，并写出最终 URL 供抓后安全复检。
+    local -a cmd=("$PYTHON_BIN" "$SCRIPT_DIR/scrapling_extract.py" fetch "$url" "$output" --real-chrome --timeout-ms "$((TIMEOUT_SCRAPLING * 1000))")
+    [[ -n "$EFFECTIVE_URL_FILE" ]] && cmd+=(--effective-url "$EFFECTIVE_URL_FILE")
     [[ -n "$PROXY_URL" ]] && cmd+=(--proxy "$PROXY_URL")
+    [[ -n "$EFFECTIVE_URL_FILE" ]] && rm -f "$EFFECTIVE_URL_FILE"
 
     while [[ $attempt -le $MAX_ATTEMPTS ]]; do
         [[ $attempt -gt 1 ]] && _info "  第 $attempt/$MAX_ATTEMPTS 次尝试..."
 
         if _run_with_timeout "$TIMEOUT_SCRAPLING" "${cmd[@]}" 2>/dev/null && \
            _is_valid_file "$output"; then
+            local eff_rc=0
+            _verify_effective_url || eff_rc=$?
+            if [[ $eff_rc -ne 0 ]]; then
+                rm -f "$output" "$EFFECTIVE_URL_FILE"
+                return 2
+            fi
             local size
             size=$(wc -c < "$output")
             _ok "  scrapling HTTP 成功 (${size}B)"
@@ -323,14 +356,23 @@ _fetch_by_stealthy() {
     local attempt=1
 
     _info "策略3: scrapling stealthy (绕过反爬)..."
-    local -a cmd=(scrapling extract stealthy-fetch "$url" "$output" --real-chrome --headless --solve-cloudflare)
+    # 使用内置包装器：保留 StealthyFetcher 行为，并写出最终 URL 供抓后安全复检。
+    local -a cmd=("$PYTHON_BIN" "$SCRIPT_DIR/scrapling_extract.py" stealthy "$url" "$output" --real-chrome --headless --solve-cloudflare --timeout-ms "$((TIMEOUT_STEALTHY * 1000))")
+    [[ -n "$EFFECTIVE_URL_FILE" ]] && cmd+=(--effective-url "$EFFECTIVE_URL_FILE")
     [[ -n "$PROXY_URL" ]] && cmd+=(--proxy "$PROXY_URL")
+    [[ -n "$EFFECTIVE_URL_FILE" ]] && rm -f "$EFFECTIVE_URL_FILE"
 
     while [[ $attempt -le $MAX_ATTEMPTS ]]; do
         [[ $attempt -gt 1 ]] && _info "  第 $attempt/$MAX_ATTEMPTS 次尝试..."
 
         if _run_with_timeout "$TIMEOUT_STEALTHY" "${cmd[@]}" 2>/dev/null && \
            _is_valid_file "$output"; then
+            local eff_rc=0
+            _verify_effective_url || eff_rc=$?
+            if [[ $eff_rc -ne 0 ]]; then
+                rm -f "$output" "$EFFECTIVE_URL_FILE"
+                return 2
+            fi
             local size
             size=$(wc -c < "$output")
             _ok "  scrapling stealthy 成功 (${size}B)"
@@ -423,7 +465,7 @@ _doctor() {
 
     _doctor_check_cmd curl || failed=1
     _doctor_check_cmd "$PYTHON_BIN" || failed=1
-    _doctor_check_cmd scrapling || failed=1
+    _doctor_check_python_module scrapling || failed=1
     _doctor_check_python_module httpx || failed=1
     _doctor_check_python_module readability || failed=1
     _doctor_check_python_module bs4 || failed=1

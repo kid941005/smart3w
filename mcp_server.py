@@ -48,7 +48,7 @@ from smart3w_interact import (
 )
 from smart3w_url_utils import normalize_url, ssrf_blocked, url_policy_error, url_shape_error
 
-__version__ = "2.9.0"
+__version__ = "2.9.1"
 
 SERVER_DIR = Path(__file__).resolve().parent
 FETCH_SH = SERVER_DIR / "scripts" / "fetch.sh"
@@ -887,8 +887,14 @@ def smart3w_map(
         respect_robots: 抓取首页时是否遵守 robots.txt
 
     Returns:
-        dict: {success, url, count, limit, urls: [{url, source}], sources?,
-               sitemap_errors?, truncated?, error?}
+        dict: {success, url, count, limit, urls: [{url, source}], sources,
+               complete, partial, sitemap_errors?, homepage_error?,
+               search_error?, truncated?, error?, error_code?}
+
+        success 语义固定为「至少发现 1 个 URL」：count > 0 才是 True。
+        只有 success=True 且所有来源无错误、未截断时 complete=True；
+        有结果但来源报错或截断时 success=True、partial=True、complete=False；
+        一个 URL 都没发现时 success=False、complete=False、error_code=MAP_FAILED。
     """
     seed = url.strip() if isinstance(url, str) else ""
     url_error = _validate_http_url(seed)
@@ -922,6 +928,7 @@ def smart3w_map(
     seen: set[str] = set()
     source_counts: dict[str, int] = {}
     sitemap_errors: list[str] = []
+    search_error = ""
     policy_cache: dict[tuple[str, str], str | None] = {}
     truncated = False
 
@@ -999,13 +1006,13 @@ def smart3w_map(
 
     homepage_error = ""
     if include_homepage:
-        # 站点根 URL 本身始终计入，避免没有 sitemap/站内链接的站点返回空结果
-        _add(seed, "homepage")
         fetched = _run_fetch_file(
             seed, "get", False, 20, 0, 0,
             use_cache=True, respect_robots=respect_robots,
         )
         if fetched.get("success"):
+            # 首页抓取成功时站点根 URL 本身也计入，避免没有 sitemap/站内链接的站点返回空结果
+            _add(seed, "homepage")
             base = fetched.get("effective_url") or seed
             for link in extract_links(
                 fetched.get("content", ""), base,
@@ -1028,23 +1035,28 @@ def smart3w_map(
                 if isinstance(row, dict) and isinstance(row.get("url"), str):
                     _add(row["url"], "search")
         else:
-            sitemap_errors.append(f"search: {search_data.get('error') or '搜索失败'}")
+            search_error = str(search_data.get("error") or "搜索失败")
 
+    source_errors = bool(sitemap_errors or homepage_error or search_error)
     out: dict[str, object] = {
-        "success": bool(urls) or not (sitemap_errors or homepage_error),
+        "success": bool(urls),
         "url": seed,
         "count": len(urls),
         "limit": limit,
         "urls": urls,
         "sources": source_counts,
+        "complete": bool(urls) and not source_errors and not truncated,
+        "partial": bool(urls) and (source_errors or truncated),
     }
     if sitemap_errors:
         out["sitemap_errors"] = sitemap_errors[:20]
     if homepage_error:
         out["homepage_error"] = homepage_error
+    if search_error:
+        out["search_error"] = search_error
     if truncated:
         out["truncated"] = True
-    if not urls and (sitemap_errors or homepage_error):
+    if not urls:
         out["error"] = "没有发现可用 URL"
         out["error_code"] = "MAP_FAILED"
     return out

@@ -403,6 +403,73 @@ def test_map_collects_sitemap_and_homepage_links(monkeypatch):
     }
 
 
+def test_map_success_requires_at_least_one_url(monkeypatch):
+    monkeypatch.setattr(mcp_server, "_validate_http_url", lambda url: None)
+
+    def fake_fetch(url, *args, **kwargs):
+        return {"success": True, "content": ""}
+
+    monkeypatch.setattr(mcp_server, "_run_fetch_file", fake_fetch)
+    monkeypatch.setattr(
+        mcp_server, "collect_sitemap_entries",
+        lambda sitemap_url, max_urls=50, recursive=False: ([], [], False, 1),
+    )
+    result = mcp_server.smart3w_map(
+        "https://example.com/", include_sitemap=True, include_homepage=False
+    )
+
+    assert result["success"] is False
+    assert result["count"] == 0
+    assert result["complete"] is False
+    assert result["partial"] is False
+    assert result["error_code"] == "MAP_FAILED"
+
+
+def test_map_marks_partial_when_a_source_fails(monkeypatch):
+    monkeypatch.setattr(mcp_server, "_validate_http_url", lambda url: None)
+
+    def fake_fetch(url, *args, **kwargs):
+        return {
+            "success": True,
+            "content": '<a href="/ok">OK</a>',
+            "effective_url": "https://example.com/",
+        }
+
+    monkeypatch.setattr(mcp_server, "_run_fetch_file", fake_fetch)
+    monkeypatch.setattr(
+        mcp_server, "collect_sitemap_entries",
+        lambda sitemap_url, max_urls=50, recursive=False: (
+            [], ["https://example.com/sitemap.xml: timeout"], False, 0
+        ),
+    )
+    result = mcp_server.smart3w_map(
+        "https://example.com/", include_sitemap=True, include_homepage=True
+    )
+
+    assert result["success"] is True
+    assert result["count"] >= 2
+    assert result["complete"] is False
+    assert result["partial"] is True
+    assert result["sitemap_errors"]
+
+
+def test_map_homepage_failure_is_not_a_success(monkeypatch):
+    monkeypatch.setattr(mcp_server, "_validate_http_url", lambda url: None)
+    monkeypatch.setattr(
+        mcp_server, "_run_fetch_file",
+        lambda *args, **kwargs: {"success": False, "error": "blocked"},
+    )
+    result = mcp_server.smart3w_map(
+        "https://example.com/", include_sitemap=False, include_homepage=True
+    )
+
+    assert result["success"] is False
+    assert result["complete"] is False
+    assert result["partial"] is False
+    assert result["error_code"] == "MAP_FAILED"
+    assert result["homepage_error"] == "blocked"
+
+
 def test_map_respects_path_filters(monkeypatch):
     monkeypatch.setattr(mcp_server, "_validate_http_url", lambda url: None)
 

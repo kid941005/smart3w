@@ -107,8 +107,8 @@ def test_search_outputs_json(capsys, monkeypatch):
             return False
 
     monkeypatch.setattr(
-        core.urllib.request,
-        "urlopen",
+        core,
+        "_open_search",
         lambda req, context=None, timeout=None: FakeResp(),
     )
     su.cmd_search("q", 5, "https://searxng.example.com")
@@ -154,7 +154,7 @@ def test_search_passes_params_and_enriches_results(capsys, monkeypatch):
         return _FakeResp(b'{"results": [{"title": "t", "url": "https://example.com/a?utm_source=x", '
                          b'"content": "c", "score": 0.9, "engines": ["google"], "positions": [1]}]}')
 
-    monkeypatch.setattr(core.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(core, "_open_search", fake_urlopen)
     su.cmd_search("q", 5, "https://a.example", language="en-US", time_range="week",
                   categories="news", safesearch=2, engines="google,bing")
     data = json.loads(capsys.readouterr().out)
@@ -183,7 +183,7 @@ def test_search_passes_through_metadata(capsys, monkeypatch):
     def fake_urlopen(req, context=None, timeout=None):
         return _FakeResp(json.dumps(body).encode("utf-8"))
 
-    monkeypatch.setattr(core.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(core, "_open_search", fake_urlopen)
     su.cmd_search("q", 5, "https://a.example")
     data = json.loads(capsys.readouterr().out)
 
@@ -198,7 +198,7 @@ def test_search_omits_empty_metadata(capsys, monkeypatch):
     def fake_urlopen(req, context=None, timeout=None):
         return _FakeResp(b'{"results": [{"title": "t", "url": "https://example.com/a", "content": "c"}]}')
 
-    monkeypatch.setattr(core.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(core, "_open_search", fake_urlopen)
     su.cmd_search("q", 5, "https://a.example")
     data = json.loads(capsys.readouterr().out)
 
@@ -256,7 +256,7 @@ def test_search_paginates_until_count(capsys, monkeypatch):
         ]
         return _FakeResp(json.dumps({"results": results}).encode("utf-8"))
 
-    monkeypatch.setattr(core.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(core, "_open_search", fake_urlopen)
     su.cmd_search("q", 15, "https://a.example")
     data = json.loads(capsys.readouterr().out)
 
@@ -365,7 +365,7 @@ def test_search_falls_back_to_backup_instance(capsys, monkeypatch):
         return _FakeResp(b'{"results": [{"title": "t", "url": "https://example.com/x", "content": "c"}]}')
 
     monkeypatch.setenv("SEARXNG_INSTANCES", "https://b.example, https://a.example")
-    monkeypatch.setattr(core.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(core, "_open_search", fake_urlopen)
     su.cmd_search("q", 5, "https://a.example")
     data = json.loads(capsys.readouterr().out)
 
@@ -377,7 +377,7 @@ def test_search_falls_back_to_backup_instance(capsys, monkeypatch):
 def test_search_dedupes_results_by_normalized_url(capsys, monkeypatch):
     body = b'{"results": [{"title": "t1", "url": "https://example.com/a?utm_source=x", "content": "c1", "engines": ["google"]}, {"title": "t2", "url": "https://example.com/a", "content": "c2", "engines": ["bing"], "score": 0.8}]}'
     monkeypatch.setattr(
-        core.urllib.request, "urlopen",
+        core, "_open_search",
         lambda req, context=None, timeout=None: _FakeResp(body),
     )
     su.cmd_search("q", 5, "https://a.example")
@@ -512,7 +512,7 @@ def test_search_normalizes_engine_string_fields(capsys, monkeypatch):
         b'"engines": "google", "positions": 1}]}'
     )
     monkeypatch.setattr(
-        core.urllib.request, "urlopen", lambda *a, **k: _FakeResp(body)
+        core, "_open_search", lambda *a, **k: _FakeResp(body)
     )
     su.cmd_search("q", 5, "https://a.example")
     data = json.loads(capsys.readouterr().out)
@@ -524,10 +524,31 @@ def test_search_normalizes_engine_string_fields(capsys, monkeypatch):
 def test_search_ignores_non_dict_results(capsys, monkeypatch):
     body = b'{"results": [null, {"title": "t", "url": "https://example.com/a", "content": "c"}]}'
     monkeypatch.setattr(
-        core.urllib.request, "urlopen", lambda *a, **k: _FakeResp(body)
+        core, "_open_search", lambda *a, **k: _FakeResp(body)
     )
     su.cmd_search("q", 5, "https://a.example")
     data = json.loads(capsys.readouterr().out)
 
     assert data["success"] is True
     assert data["result_count"] == 1
+
+
+def test_search_redirect_handler_rejects_unsafe_shape():
+    handler = core._SearchRedirectHandler()
+    with pytest.raises(urllib.error.HTTPError):
+        handler.redirect_request(None, None, 302, "Found", {}, "file:///etc/passwd")
+
+
+def test_fetch_search_allows_private_instance_shape(monkeypatch):
+    body = b'{"results": [{"title": "t", "url": "https://example.com/a"}]}'
+    monkeypatch.setattr(core, "_open_search", lambda *a, **k: _FakeResp(body))
+    data = core._fetch_search("http://127.0.0.1:8080", "q", 5, "zh-CN", "", "", 0, "")
+    assert data["results"][0]["title"] == "t"
+
+
+def test_scrapling_wrapper_writes_effective_url(tmp_path):
+    import scrapling_extract as se
+
+    target = tmp_path / "effective.txt"
+    se._write_effective(str(target), " https://example.com/ ")
+    assert target.read_text(encoding="utf-8") == "https://example.com/\n"

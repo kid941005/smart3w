@@ -1,7 +1,7 @@
 ---
 name: smart3w
-description: 智能网页抓取路由 + SearXNG 搜索，支持 PDF/Office 文档解析、搜索即读、站点地图发现、递归抓取、CSS/XPath 结构化抽取与真实浏览器交互（点击/登录/翻页）。支持 4 种明确语义的抓取方式：get 使用 Python HTTP（逐跳 SSRF/robots，失败回退 curl），fetch 使用 scrapling extract fetch + --real-chrome，stealthy 使用 scrapling stealthy-fetch + --real-chrome，smart 按 Python HTTP → curl → fetch → stealthy 自动降级。支持并发批量抓取、URL 去重缓存、robots.txt 检查与按域名限速；搜索支持多 SearXNG 实例故障转移与语言/时间/分类/安全搜索/引擎参数。默认输出尽量为 Markdown：普通网页提取正文并尽量保留图片为 Markdown 图片链接，微信文章按正文段落输出并保留插图。
-version: 2.9.0
+description: 智能网页抓取路由 + SearXNG 搜索，支持 PDF/Office 文档解析、搜索即读、站点地图发现、递归抓取、CSS/XPath 结构化抽取与真实浏览器交互（点击/登录/翻页）。支持 4 种明确语义的抓取方式：get 使用 Python HTTP（逐跳 SSRF/robots，失败回退 curl），fetch 使用内置 scrapling 包装器（DynamicFetcher + --real-chrome），stealthy 使用内置 scrapling 包装器（StealthyFetcher + --real-chrome），抓取后都会复检最终 URL，smart 按 Python HTTP → curl → fetch → stealthy 自动降级。支持并发批量抓取、URL 去重缓存、robots.txt 检查与按域名限速；搜索支持多 SearXNG 实例故障转移与语言/时间/分类/安全搜索/引擎参数。默认输出尽量为 Markdown：普通网页提取正文并尽量保留图片为 Markdown 图片链接，微信文章按正文段落输出并保留插图。
+version: 2.9.1
 license: MIT
 ---
 
@@ -16,9 +16,9 @@ license: MIT
     ├── 搜索模式：SearXNG 搜索 → 返回标题/URL/摘要
     └── 抓取模式：
             get      → Python HTTP（逐跳 SSRF/robots，失败回退 curl）
-            fetch    → 仅 scrapling extract fetch + --real-chrome
-            stealthy → 仅 scrapling stealthy-fetch + --real-chrome
-            smart    → Python HTTP → curl → scrapling extract fetch + --real-chrome → stealthy-fetch + --real-chrome
+            fetch    → 仅内置 scrapling 包装器（DynamicFetcher + --real-chrome，抓后复检最终 URL）
+            stealthy → 仅内置 scrapling 包装器（StealthyFetcher + --real-chrome，抓后复检最终 URL）
+            smart    → Python HTTP → curl → scrapling fetch → scrapling stealthy
 
 补充说明：
 - 抓取成功后默认执行正文提取
@@ -189,7 +189,7 @@ cargo build --release --locked
 
 **正文筛选与缓存新鲜度**：`smart3w_fetch(query="关键词", max_tokens=2000, max_age_seconds=60)` 只保留最相关段落并控制上下文预算（4 字符≈1 token），同时限制缓存年龄；`max_age_seconds=0` 强制跳过缓存，命中时返回 `cache_age`。
 
-**站点发现**：`smart3w_map(url, limit=200, search="", include_sitemap=True, include_homepage=True, same_domain=True, path_include="", path_exclude="")` 返回 `urls: [{url, source}]` 与来源计数。
+**站点发现**：`smart3w_map(url, limit=200, search="", include_sitemap=True, include_homepage=True, same_domain=True, path_include="", path_exclude="")` 返回 `urls: [{url, source}]` 与来源计数。成功语义固定为「至少发现 1 个 URL」：`success = count > 0`；只有 `success=true` 且所有来源无错误、未截断时 `complete=true`；有结果但部分来源失败或截断时 `partial=true`、`complete=false`；一个 URL 都没发现时 `success=false`、`complete=false`、`error_code=MAP_FAILED`。
 
 **递归抓取与后台任务**：`smart3w_crawl(seed_url="https://example.com/", max_depth=2, max_pages=20, same_domain=True)` 进入 BFS 站点抓取；加 `run_async=true` 返回 `job_id`，用 `smart3w_job(job_id)` 查询、`smart3w_job(job_id, cancel=true)` 取消。任务仅存在于当前 MCP 进程。
 
@@ -207,7 +207,7 @@ cargo build --release --locked
 ### 智能抓取（默认，推荐）
 
 ```bash
-# 自动按 Python HTTP → curl → scrapling extract fetch + --real-chrome → stealthy-fetch + --real-chrome 降级
+# 自动按 Python HTTP → curl → scrapling fetch → scrapling stealthy 降级
 ./scripts/fetch.sh smart "https://example.com" ./output.md
 
 # 跳过压缩，获取原始 HTML
@@ -227,14 +227,14 @@ cargo build --release --locked
 ### 动态页面
 
 ```bash
-# 仅使用 scrapling extract fetch + --real-chrome
+# 仅使用内置 scrapling 包装器（DynamicFetcher + --real-chrome，抓后复检最终 URL）
 ./scripts/fetch.sh fetch "https://spa-website.com" ./output.md
 ```
 
 ### 反爬保护网站
 
 ```bash
-# 仅使用 scrapling stealthy-fetch + --real-chrome
+# 仅使用内置 scrapling 包装器（StealthyFetcher + --real-chrome，抓后复检最终 URL）
 ./scripts/fetch.sh stealthy "https://protected-site.com" ./output.html
 ```
 
@@ -263,8 +263,8 @@ cargo build --release --locked
 | --- | --- | --- |
 | 网页搜索 | SearXNG | `fetch.sh search "关键词"` |
 | 普通静态网页、博客 | Python HTTP（回退 curl） | `fetch.sh get <URL>` |
-| 需要更强页面处理能力 | scrapling extract fetch + --real-chrome | `fetch.sh fetch <URL>` |
-| Cloudflare 保护 | stealthy-fetch + --real-chrome | `fetch.sh stealthy <URL>` |
+| 需要更强页面处理能力 | 内置 scrapling 包装器（DynamicFetcher，抓后复检最终 URL） | `fetch.sh fetch <URL>` |
+| Cloudflare 保护 | 内置 scrapling 包装器（StealthyFetcher，抓后复检最终 URL） | `fetch.sh stealthy <URL>` |
 | 不确定站点类型 | 自动降级（Python HTTP → curl → fetch → stealthy） | `fetch.sh smart <URL>` |
 | 需要原始 HTML | 任意 + --no-compress | `fetch.sh get <URL> --no-compress` |
 
@@ -321,6 +321,7 @@ cargo build --release --locked
 - **降级机制**：压缩失败时自动回退为原始 HTML，确保不丢失内容
 - SearXNG 搜索优先使用自建实例，隐私友好
 - SSRF / allowlist 防护作用于 MCP 工具层与 `scripts/fetch.sh` 的抓取预检；
-  `fetch` / `stealthy` 的浏览器内部重定向仍需叠加出站网络策略
+  `fetch` / `stealthy` 会在抓取完成后读取 `scripts/scrapling_extract.py` 写出的最终 URL 并复检，
+  但浏览器内部重定向无法逐跳拦截，仍需叠加出站网络策略
 - 大规模抓取考虑使用 Python Spider 框架
 - 尊重网站 robots.txt 和服务条款

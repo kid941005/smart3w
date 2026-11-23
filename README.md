@@ -2,7 +2,7 @@
 
 [![OpenClaw](https://img.shields.io/badge/OpenClaw-Compatible-green)](https://github.com/openclaw/openclaw)
 [![MIT](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-2.9.0-blue)](https://github.com/kid941005/smart3w/releases)
+[![Version](https://img.shields.io/badge/Version-2.9.1-blue)](https://github.com/kid941005/smart3w/releases)
 
 集 **SearXNG 网页搜索**、**Sitemap 解析** 与 **智能网页抓取** 于一体。
 
@@ -82,8 +82,8 @@ export SMART3W_CHROME="/path/to/chrome"
 - 安装后可先运行 `./scripts/fetch.sh doctor` 做环境自检
 - 如需同时验证搜索连通性，可运行 `./scripts/fetch.sh doctor --check-search`（该命令会向 `SEARXNG_INSTANCE` 发起真实网络请求）
 - Windows 下需要可用的 `bash`（Git Bash / Cygwin / WSL），MCP 服务会把当前 Python 解释器通过 `SMART3W_PYTHON` 传给 `fetch.sh`
-- 在当前项目实现中，`fetch` = `scrapling extract fetch + --real-chrome`
-- `stealthy` = `scrapling extract stealthy-fetch + --real-chrome`
+- 在当前项目实现中，`fetch` = 内置 `scripts/scrapling_extract.py`（DynamicFetcher，等价 `scrapling extract fetch + --real-chrome`），抓取后会把最终 URL 写入侧车文件并做安全复检
+- `stealthy` = 内置 `scripts/scrapling_extract.py`（StealthyFetcher，等价 `scrapling extract stealthy-fetch + --real-chrome`），同样支持最终 URL 复检
 - `smart` 会按 `Python HTTP → curl → fetch → stealthy` 自动降级
 - 默认输出尽量为 Markdown
 - 普通网页会提取正文并尽量保留图片为 Markdown 图片链接：`![](URL)`
@@ -138,6 +138,7 @@ smart3w-mcp
 - `smart3w_search` 新增 `read_top`（0-5，默认 0）与 `content_max_chars`（0-200000，默认 5000）。设置 `read_top>0` 时会直接抓取前 N 条结果正文，返回每条 `content` / `content_truncated` / `content_total_length` / `effective_url` / `read_error` / `read_error_code`，并在顶层返回 `read_top` / `read_succeeded` / `read_failed`。
 - `smart3w_fetch` 会按 Content-Type、URL 扩展名和文件头自动识别 PDF / DOCX / XLSX / PPTX，并解析为 Markdown；成功结果增加 `format` / `pages` / `sheets` / `slides` / `paragraphs` / `tables` / `chars` / `document`。旧版 `.doc/.xls/.ppt` 会明确报错，扫描版 PDF 会提示需要 OCR。
 - `smart3w_map` 支持 `limit` / `search` / `include_sitemap` / `include_homepage` / `same_domain` / `path_include` / `path_exclude`；返回 `urls: [{url, source}]` 与各来源计数。
+- `smart3w_map` 的 `success` 固定为「至少发现 1 个 URL」：`count > 0` 才是 true；只有 `success=true` 且所有来源无错误、未截断时 `complete=true`；有结果但部分来源失败或结果被截断时 `partial=true`、`complete=false`；一个 URL 都没发现时 `success=false`、`complete=false`、`error_code=MAP_FAILED`。错误来源分别放在 `sitemap_errors` / `homepage_error` / `search_error`。
 - `smart3w_crawl` 递归模式使用 `seed_url`、`max_depth`（1-5）、`max_pages`（1-500）、`same_domain` 与路径过滤；`run_async=true` 返回 `job_id`，用 `smart3w_job(job_id)` 查询、`smart3w_job(job_id, cancel=true)` 取消。后台任务只保存在当前 MCP 进程内，重启后丢失。
 - `smart3w_extract` 接受 1-20 个 URL 与非空 `schema`，`mode=css|xpath`；schema 值可为选择器字符串或 `{selector|css|xpath, attr, all}` 对象，返回 `data` 与 `missing`。
 - `smart3w_fetch` 支持 `query`（只保留最相关段落，返回 `filter` 统计与 `original_length`）、`max_tokens`（按 4 字符≈1 token 估算上下文预算）、`max_age_seconds`（-1 跟随全局 TTL，0 强制跳过缓存，>0 限制缓存年龄；命中时返回 `cached` / `cache_age`）。
@@ -217,7 +218,7 @@ CLI 的 `search` 在 `success=false`（参数错误、无可用实例等）时�
 
 ### smart - 智能抓取
 
-**自动降级策略**：Python HTTP → curl → scrapling extract fetch → scrapling extract stealthy-fetch
+**自动降级策略**：Python HTTP → curl → scrapling fetch → scrapling stealthy
 
 ```bash
 ./scripts/fetch.sh smart "https://example.com" ./output.md
@@ -229,7 +230,7 @@ CLI 的 `search` 在 `success=false`（参数错误、无可用实例等）时�
 
 ### fetch - 渲染型抓取
 
-**仅使用策略**：scrapling extract fetch + `--real-chrome`
+**仅使用策略**：内置 scrapling 包装器（DynamicFetcher + `--real-chrome`），抓取后复检最终 URL
 
 适合需要比纯 curl 更强页面处理能力的页面。
 
@@ -241,7 +242,7 @@ CLI 的 `search` 在 `success=false`（参数错误、无可用实例等）时�
 
 ### stealthy - 反爬抓取
 
-**仅使用策略**：scrapling extract stealthy-fetch + `--real-chrome`
+**仅使用策略**：内置 scrapling 包装器（StealthyFetcher + `--real-chrome`），抓取后复检最终 URL
 
 处理 Cloudflare 等反爬保护网站。
 
@@ -309,10 +310,12 @@ get <URL>
          └─► 失败时回退 curl ─► 成功后内容压缩（默认） ─► 输出结果
 
 fetch <URL>
-    └─► scrapling extract fetch + --real-chrome ─► 成功后内容压缩（默认） ─► 输出结果
+    └─► scrapling_extract.py fetch（DynamicFetcher + --real-chrome）
+         └─► 抓后复检最终 URL ─► 成功后内容压缩（默认） ─► 输出结果
 
 stealthy <URL>
-    └─► scrapling extract stealthy-fetch + --real-chrome ─► 成功后内容压缩（默认） ─► 输出结果
+    └─► scrapling_extract.py stealthy（StealthyFetcher + --real-chrome）
+         └─► 抓后复检最终 URL ─► 成功后内容压缩（默认） ─► 输出结果
 
 smart <URL>
     ├─1─► Python HTTP（逐跳 SSRF/robots） ─► [成功] ──┐
@@ -437,13 +440,63 @@ services:
 >
 > 重定向 SSRF：`get` / `smart` 的 Python HTTP 路径、curl 回退路径与 `smart3w_sitemap` 均已逐跳校验每个 redirect hop
 > （SSRF + 可选 robots）；curl 回退不再使用 `-L`，而是手动读取 `Location` 并在每一跳重新校验。
-> 但 `fetch` / `stealthy` 的浏览器内部跳转仍只能校验最终 URL；高安全场景请叠加出站网络策略
-> （只允许公网出口、代理白名单或 egress firewall），不要仅依赖应用层校验。
+> `fetch` / `stealthy` 的浏览器内部跳转无法关闭自动重定向，当前实现会在抓取完成后读取最终 URL
+> （`scripts/scrapling_extract.py` 写入的 effective-url 侧车）并再次执行 allowlist/SSRF 校验；
+> MCP 层命中时返回 `SSRF_BLOCKED`。这会把风险窗口缩短为“一次已经发出的请求”，但无法阻止该请求本身，
+> 高安全场景仍应叠加出站网络策略（只允许公网出口、代理白名单或 egress firewall），不要仅依赖应用层校验。
 >
 > 下载上限：`SMART3W_MAX_DOWNLOAD_BYTES` 对 Python HTTP 与 curl 生效；scrapling/stealthy 由第三方库驱动，
 > 无法强制中断超大响应，生产环境仍需出站流量/磁盘配额兜底。
 >
 > 环境变量中的非法数值会回退默认值，不会导致服务启动失败；但生产环境仍建议显式设置并纳入配置管理。
+
+---
+
+### 公网部署：反向代理 + API Key
+
+MCP 服务本身无内置账号体系，公网部署建议只暴露反向代理，由代理做 API Key 校验与限流。
+容器端口默认映射到宿主机所有网卡；若代理与应用同机，建议把 `docker-compose.yml` 的端口改为
+`127.0.0.1:50826:50826`，避免绕过代理直连。
+
+Nginx 示例（静态 Token 用 `map` 比较，生产可换成 auth_request / JWT 校验）：
+
+```nginx
+map $http_authorization $smart3w_ok {
+    default 0;
+    "Bearer <TOKEN>" 1;
+}
+
+server {
+    listen 443 ssl;
+    server_name smart3w.example.com;
+
+    location /mcp {
+        if ($smart3w_ok = 0) { return 401; }
+        proxy_pass http://127.0.0.1:50826;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_buffering off;          # MCP Streamable HTTP 需要流式转发
+        proxy_read_timeout 300s;
+    }
+}
+```
+
+客户端配置需带同名请求头（不同 MCP 客户端字段名可能不同，下例为常见 `headers` 写法）：
+
+```json
+{
+  "mcpServers": {
+    "smart3w": {
+      "type": "streamable-http",
+      "url": "https://smart3w.example.com/mcp",
+      "headers": { "Authorization": "Bearer <TOKEN>" }
+    }
+  }
+}
+```
+
+上线前请同时：启用 TLS、限制请求体大小、按 IP/Token 限流，并保留代理访问日志用于审计。
 
 ---
 
@@ -486,11 +539,12 @@ smart3w/
 ├── smart3w_rust.py         # Rust 后端桥接（子进程 + JSON 信封，失败回退纯 Python）
 ├── rust/                   # Rust sidecar 源码（HTML→Markdown / PDF / XLSX / CSV）
 ├── .github/workflows/      # CI（lint + 测试 + 打包）与 Docker 发布
-├── tests/                  # 单元测试（pytest，204 例）
+├── tests/                  # 单元测试（pytest，213 例）
 └── scripts/
     ├── fetch.sh            # 统一入口脚本（搜索 / 抓取 / Sitemap）
     ├── document_extract.py # 文档解析 CLI（PDF / Office → Markdown）
     ├── smart3w_http.py     # 轻量 HTTP 抓取：逐跳 SSRF/robots + Accept Markdown + 代理
+    ├── scrapling_extract.py # scrapling 浏览器抓取包装器（写出最终 URL 供抓后复检）
     └── smart3w_utils.py    # 共享 Python 逻辑（搜索 / Sitemap / 正文压缩）
 ```
 
@@ -539,6 +593,15 @@ Python HTTP/curl/scrapling 策略降级，`smart3w_interact` 使用 Playwright �
 ---
 
 ## 📝 更新日志
+
+### 2.9.1
+
+- **安全（scrapling 最终 URL 复检）**：`fetch` / `stealthy` 改走内置 `scripts/scrapling_extract.py` 包装器，抓取完成后把最终 URL 写入侧车并由 `fetch.sh` 按同一套 allowlist/SSRF 策略复检；命中私网或非法目标时删除结果并返回安全拒绝（`SSRF_BLOCKED`），不再把重定向后的内网地址当普通抓取结果返回。仍无法阻止已经发出的请求，公网部署必须同时配置出站网络策略。
+- **安全（SearXNG 实例地址）**：搜索实例地址和重定向目标改为统一的 URL 形状/协议校验（长度、控制字符、端口、userinfo、scheme），不拦私网实例；非法形状或重定向直接拒绝。
+- **站点发现（`smart3w_map` 成功语义固定）**：`success` 统一为 `count > 0`；新增 `complete` / `partial`，来源错误或截断时 `partial=true`、`complete=false`；无任何 URL 时 `success=false`、`error_code=MAP_FAILED`；搜索错误从 `sitemap_errors` 拆到独立 `search_error`。
+- **修复（Windows/MSYS 侧车路径）**：MSYS/Cygwin 下不再使用原生 `timeout.exe` 包裹浏览器抓取，避免 `/tmp/...` 被重解析为 `D:\tmp\...` 导致最终 URL 侧车丢失；改由 scrapling 自身 `--timeout-ms` 控制。
+- **文档**：新增反向代理 + API Key 部署示例；同步更新 `SKILL.md` 的 fetch/stealthy 与 map 语义说明。
+- **测试**：新增 scrapling 包装器侧车、搜索重定向形状、map success/partial/complete 回归测试，共 213 例通过。
 
 ### 2.9.0
 
