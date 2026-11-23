@@ -395,6 +395,36 @@ def test_search_validates_safesearch(capsys, monkeypatch):
     assert "safesearch" in data["error"]
 
 
+def test_compress_html_decodes_gbk_page(tmp_path):
+    html = "<html><body><article><p>中文测试内容</p></article></body></html>"
+    src = tmp_path / "gbk.html"
+    src.write_bytes(html.encode("gbk"))
+    out = tmp_path / "out.md"
+
+    assert su.compress_html(str(src), str(out)) is True
+    assert "中文测试内容" in out.read_text(encoding="utf-8")
+
+
+def test_single_urlset_reports_truncation(monkeypatch):
+    body = (
+        b'<?xml version="1.0" encoding="UTF-8"?>'
+        b'<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+        b"<url><loc>https://example.com/1</loc></url>"
+        b"<url><loc>https://example.com/2</loc></url>"
+        b"<url><loc>https://example.com/3</loc></url></urlset>"
+    )
+    monkeypatch.setattr(
+        core, "_open_sitemap", lambda req, *a, **k: _SitemapResp(body, url=req.full_url)
+    )
+    entries, errors, truncated, _ = core.collect_sitemap_entries(
+        "https://example.com/sitemap.xml", max_urls=2
+    )
+
+    assert len(entries) == 2
+    assert errors == []
+    assert truncated is True
+
+
 def test_compress_html_does_not_duplicate_list_paragraphs(tmp_path):
     html = """<html><body><article>
       <ul><li><p>one</p></li><li><p>two</p></li></ul>

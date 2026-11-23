@@ -36,12 +36,17 @@ def _split_patterns(value: str) -> list[str]:
 
 def path_allowed(path: str, include: str = "", exclude: str = "") -> bool:
     """按 path_include / path_exclude（逗号分隔，支持 fnmatch 通配符）过滤路径。"""
-    normalized = path or "/"
+    normalized = "/" + (path or "").lstrip("/")
 
     def _match(pattern: str) -> bool:
         if any(ch in pattern for ch in "*?["):
-            return fnmatch.fnmatch(normalized, pattern)
-        prefix = pattern.rstrip("/")
+            candidates = [normalized, normalized.lstrip("/")]
+            if "/" not in pattern:
+                candidates.append(normalized.rsplit("/", 1)[-1])
+            return any(fnmatch.fnmatch(candidate, pattern) for candidate in candidates)
+        prefix = "/" + pattern.rstrip("/").lstrip("/")
+        if prefix == "/":
+            return True
         return normalized == prefix or normalized.startswith(prefix + "/")
 
     includes = _split_patterns(include)

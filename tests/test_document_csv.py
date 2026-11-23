@@ -40,3 +40,12 @@ def test_extract_csv_empty_raises(tmp_path):
     path.write_text("\n\n", encoding="utf-8")
     with pytest.raises(DocumentError):
         extract_document_file(path)
+
+
+def test_extract_gbk_csv_document(tmp_path):
+    path = tmp_path / "gbk.csv"
+    path.write_bytes("名称,数量\n苹果,3\n".encode("gbk"))
+    result = extract_document_file(path)
+    assert result["kind"] == "csv"
+    assert "| 名称 | 数量 |" in result["markdown"]
+    assert "| 苹果 | 3 |" in result["markdown"]

@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import io
 import re
 import zipfile
 from pathlib import Path
@@ -288,15 +289,24 @@ def _csv_to_markdown(path: Path) -> tuple[str, dict[str, Any]]:
 
     rows: list[list[str]] = []
     try:
-        with path.open("r", encoding="utf-8-sig", errors="replace", newline="") as handle:
-            for record in _csv.reader(handle):
-                values = [value.replace("|", "\\|").replace("\n", "<br>") for value in record]
-                while values and not values[-1]:
-                    values.pop()
-                if any(values):
-                    rows.append(values)
+        raw = path.read_bytes()
     except OSError as exc:  # pragma: no cover
         raise DocumentError(f"CSV 解析失败: {exc}") from exc
+    text = None
+    for encoding in ("utf-8-sig", "gb18030"):
+        try:
+            text = raw.decode(encoding)
+            break
+        except UnicodeDecodeError:
+            continue
+    if text is None:
+        text = raw.decode("utf-8-sig", errors="replace")
+    for record in _csv.reader(io.StringIO(text)):
+        values = [value.replace("|", "\\|").replace("\n", "<br>") for value in record]
+        while values and not values[-1]:
+            values.pop()
+        if any(values):
+            rows.append(values)
     if not rows:
         raise DocumentError("CSV 未提取到内容")
     width = max(len(row) for row in rows)
@@ -317,6 +327,8 @@ def _extract_with_rust(kind: str, path: Path) -> tuple[str, dict[str, Any]] | No
     except Exception:
         return None
     if not smart3w_rust.available():
+        return None
+    if kind not in ("pdf", "xlsx", "csv"):
         return None
     try:
         data = path.read_bytes()

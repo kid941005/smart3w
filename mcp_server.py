@@ -230,8 +230,8 @@ def _run_fetch(
     fetch.sh 约定：数据走 stdout，日志走 stderr，因此成功时只返回 stdout，
     失败时把 stderr（或 stdout）作为异常信息抛出，避免日志污染数据通道。
 
-    传入 cancel_event 时使用 Popen 轮询，可以在后台任务取消时立即终止
-    fetch.sh 及其子进程；不传时保持原来的 subprocess.run 行为。
+    统一使用 Popen 轮询：可在超时或后台任务取消时终止 fetch.sh 及其子进程；
+    不传 cancel_event 时内部创建一个永不触发的事件，行为与普通调用一致。
     """
     if not FETCH_SH.is_file():
         raise FetchUnavailableError(f"找不到抓取脚本: {FETCH_SH}")
@@ -251,25 +251,10 @@ def _run_fetch(
 
     command = [_resolve_bash(), str(FETCH_SH), *args]
 
+    # 统一走 Popen 轮询：即使没有取消事件，超时也必须终止整个进程树，
+    # 避免 subprocess.run 只杀 bash、把 fetch.sh 拉起的 python/curl 留成孤儿进程。
     if cancel_event is None:
-        try:
-            result = subprocess.run(
-                command,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=timeout,
-                env=env,
-            )
-        except subprocess.TimeoutExpired as exc:
-            raise FetchTimeoutError(f"fetch.sh 执行超时（>{timeout}s）") from exc
-        except OSError as exc:
-            raise FetchUnavailableError(f"无法执行 fetch.sh（需要 bash）: {exc}") from exc
-        if result.returncode != 0:
-            detail = result.stderr.strip() or result.stdout.strip() or f"Exit code {result.returncode}"
-            raise FetchError(detail)
-        return result.stdout
+        cancel_event = threading.Event()
 
     popen_kwargs: dict[str, object] = {}
     if os.name == "nt":
@@ -366,11 +351,15 @@ def _do_fetch_file(
         run_kwargs: dict[str, object] = {"respect_robots": respect_robots}
         if cancel_event is not None:
             run_kwargs["cancel_event"] = cancel_event
-        log = _run_fetch(
-            args,
-            _fetch_subprocess_timeout(timeout, mode),
-            **run_kwargs,
-        )
+        try:
+            log = _run_fetch(
+                args,
+                _fetch_subprocess_timeout(timeout, mode),
+                **run_kwargs,
+            )
+        except FetchTimeoutError as exc:
+            # 对外报告用户设置的超时，而不是内部放大的子进程超时
+            raise FetchTimeoutError(f"抓取超时（>{timeout}s）") from exc
         try:
             content = Path(out_path).read_text(encoding="utf-8", errors="replace")
         except OSError as exc:
@@ -434,9 +423,10 @@ def _finalize_fetch_result(
     out = dict(result)
     content = out.get("content", "") or ""
     effective_limit = max_length
-    if max_tokens > 0 and max_length == 0:
-        # 粗估 4 字符 ≈ 1 token；只用于上下文控制，不保证与具体模型分词一致
-        effective_limit = max_tokens * 4
+    if max_tokens > 0:
+        # 粗估 4 字符 ≈ 1 token；两个上限同时给定时取更严格的那个
+        token_limit = max_tokens * 4
+        effective_limit = min(max_length, token_limit) if max_length > 0 else token_limit
     if query and out.get("success"):
         filtered, stats = filter_content(content, query, max_chars=effective_limit)
         out["content"] = filtered
@@ -629,7 +619,7 @@ def _run_job(job: dict, target, *args, **kwargs) -> None:
             job["status"] = "cancelled"
             job["error"] = str(exc)
             job["finished_at"] = time.time()
-    except Exception as exc:
+    except BaseException as exc:  # noqa: BLE001 - 后台线程必须记录所有异常并落终态
         with JOBS_LOCK:
             job["status"] = "failed"
             job["error"] = str(exc)
@@ -785,7 +775,7 @@ def smart3w_search(
     if not isinstance(data, dict):
         return {
             "success": False, "query": query, "results": [], "result_count": 0,
-            "error": "搜索服务返回了非对象 JSON",
+            "error": "搜索服务返回了非对象 JSON", "error_code": "SEARCH_FAILED",
         }
     if data.get("success"):
         SEARCH_CACHE.put(cache_key, data)
@@ -956,8 +946,7 @@ def smart3w_map(
         if not isinstance(candidate, str) or not candidate.strip():
             return
         candidate = candidate.strip()
-        if _policy_error(candidate):
-            return
+        # 先做廉价的同站/路径过滤，避免为必然丢弃的链接做 DNS/SSRF 查询
         if same_domain and not same_site(candidate, seed):
             return
         try:
@@ -965,6 +954,8 @@ def smart3w_map(
         except ValueError:
             return
         if not path_allowed(path, path_include, path_exclude):
+            return
+        if _policy_error(candidate):
             return
         key = normalize_url(candidate)
         if not key or key in seen:
@@ -1091,10 +1082,12 @@ def _crawl_site(
         key = normalize_url(url)
         if key in visited:
             continue
-        visited.add(key)
         if _validate_http_url(url):
-            invalid.append(url)
+            # 非法 URL 不进入 visited 统计，避免 unique 与 succeeded+failed 不一致
+            if url not in invalid:
+                invalid.append(url)
             continue
+        visited.add(key)
         try:
             raw = _run_fetch_file(
                 url, mode, False, timeout, max_length=0, start_index=0,
@@ -1144,7 +1137,7 @@ def _crawl_site(
         "mode": "site",
         "max_depth": max_depth,
         "max_pages": max_pages,
-        "unique": len(visited),
+        "unique": len(results),
         "succeeded": succeeded,
         "failed": len(results) - succeeded,
         "truncated": bool(queue),
@@ -1267,7 +1260,16 @@ def smart3w_crawl(
                 daemon=True,
                 name=f"smart3w-crawl-{job['job_id'][:8]}",
             )
-            thread.start()
+            try:
+                thread.start()
+            except Exception as exc:
+                with JOBS_LOCK:
+                    job["status"] = "failed"
+                    job["error"] = f"后台任务启动失败: {exc}"
+                    job["finished_at"] = time.time()
+                return {"success": False, "job_id": job["job_id"],
+                        "error": f"后台任务启动失败: {exc}",
+                        "error_code": "INTERNAL_ERROR"}
             return {
                 "success": True, "job_id": job["job_id"], "status": "queued",
                 "seed_url": seed, "message": "任务已提交，请用 smart3w_job 查询进度和结果",
@@ -1432,10 +1434,17 @@ def smart3w_extract(
         }
 
     def _extract_one(url: str) -> dict:
-        raw = _run_fetch_file(
-            url, "get", False, timeout, max_length=0, start_index=0,
-            use_cache=True, respect_robots=respect_robots,
-        )
+        try:
+            raw = _run_fetch_file(
+                url, "get", False, timeout, max_length=0, start_index=0,
+                use_cache=True, respect_robots=respect_robots,
+            )
+        except FetchError as exc:
+            return {"url": url, "success": False, "error": str(exc),
+                    "error_code": exc.error_code}
+        except Exception as exc:
+            return {"url": url, "success": False, "error": str(exc),
+                    "error_code": "INTERNAL_ERROR"}
         if not raw.get("success"):
             return {
                 "url": url, "success": False,
@@ -1501,7 +1510,8 @@ def smart3w_job(job_id: str = "", cancel: bool = False) -> dict[str, object]:
         dict: {success, job_id?, status?, result?, error?} 或 {success, jobs, count}
     """
     if not isinstance(job_id, str):
-        job_id = str(job_id)
+        return {"success": False, "error": "job_id 必须是字符串",
+                "error_code": "INVALID_ARGUMENT"}
     if not isinstance(cancel, bool):
         return {"success": False, "error": "cancel 必须是布尔值", "error_code": "INVALID_ARGUMENT"}
     job_id = job_id.strip()
@@ -1569,7 +1579,8 @@ async def smart3w_interact(
         return {"success": False, "url": str(url), "error": "url 必须是字符串",
                 "error_code": "INVALID_ARGUMENT"}
     url = url.strip()
-    url_error = _validate_http_url(url)
+    # URL 策略包含 DNS 解析，放到线程里避免阻塞事件循环
+    url_error = await asyncio.to_thread(_validate_http_url, url)
     if url_error:
         return {"success": False, "url": url, "error": url_error,
                 "error_code": "INVALID_ARGUMENT"}
@@ -1596,9 +1607,9 @@ async def smart3w_interact(
         normalized_cookies = normalize_cookies(cookies or [])
     except InteractionError as exc:
         return {"success": False, "url": url, "error": str(exc), "error_code": exc.code}
-    if respect_robots and not ROBOTS_CHECKER.allows(url):
+    if respect_robots and not await asyncio.to_thread(ROBOTS_CHECKER.allows, url):
         return {"success": False, "url": url, "error": "robots.txt 禁止抓取该 URL",
-                "error_code": "ROBOTS_DENIED"}
+                "error_code": "ROBOTS_BLOCKED"}
     try:
         result = await asyncio.to_thread(
             run_interaction,
@@ -1617,7 +1628,8 @@ async def smart3w_interact(
     except Exception as exc:
         return {"success": False, "url": url, "error": f"浏览器交互失败: {exc}",
                 "error_code": "INTERACT_FAILED"}
-    result["success"] = True
+    # run_interaction 正常返回视为成功；若内部已标记失败则保留其结论
+    result.setdefault("success", True)
     return result
 
 
@@ -1631,7 +1643,7 @@ def smart3w_sitemap(url: str, max_urls: int = 50, recursive: bool = False) -> di
         recursive: 是否递归展开 Sitemap Index（最多 2 层）
 
     Returns:
-        dict: {success, output} 或 {success: False, error, error_code}
+        dict: {success, output}（output 为格式化文本）或 {success: False, error, error_code}
     """
     if not _is_int(max_urls) or max_urls < 1 or max_urls > 10000:
         return {"success": False, "error": "max_urls 必须是 1-10000 的整数",
@@ -1656,7 +1668,7 @@ def smart3w_doctor(check_search: bool = False) -> dict[str, object]:
     """Check if smart3w dependencies are installed and functional.
 
     Returns:
-        dict: {success, output} 或 {success: False, error}
+        dict: {success, output, rust?} 或 {success: False, error, error_code}
     """
     if not isinstance(check_search, bool):
         return {"success": False, "error": "check_search 必须是布尔值",

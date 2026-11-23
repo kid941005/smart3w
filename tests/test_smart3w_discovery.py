@@ -25,6 +25,9 @@ def test_path_allowed_supports_prefix_and_glob():
     assert path_allowed("/docs/a", "/docs/*") is True
     assert path_allowed("/blog/a", "/docs") is False
     assert path_allowed("/private/a", "", "/private/*") is False
+    # 用户常省略前导斜杠，也应命中；无斜杠通配符匹配文件名
+    assert path_allowed("/blog/a", "blog") is True
+    assert path_allowed("/blog/a/index.html", "*.html") is True
 
 
 def test_extract_links_filters_and_resolves_relative_urls():

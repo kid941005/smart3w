@@ -235,7 +235,7 @@ def test_mcp_interact_validates_and_rejects(monkeypatch):
 
     monkeypatch.setattr(mcp_server, "ROBOTS_CHECKER", type("R", (), {"allows": lambda self, url: False})())
     result = asyncio.run(mcp_server.smart3w_interact("https://example.com/"))
-    assert result["error_code"] == "ROBOTS_DENIED"
+    assert result["error_code"] == "ROBOTS_BLOCKED"
 
 
 def test_request_guard_caches_by_origin_not_host(monkeypatch):

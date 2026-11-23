@@ -1,7 +1,6 @@
 """mcp_server 层测试：结构化返回、搜索缓存与 SSRF 拦截（无真实网络依赖）。"""
 
 import asyncio
-import subprocess
 import sys
 import threading
 import time
@@ -230,10 +229,10 @@ def test_run_fetch_file_requests_html_for_uncompressed_content(monkeypatch):
 
 
 def test_fetch_timeout_returns_structured_error(monkeypatch):
-    def fake_run(*args, **kwargs):
-        raise subprocess.TimeoutExpired(cmd="fetch.sh", timeout=1)
+    def fake_run_fetch(*args, **kwargs):
+        raise mcp_server.FetchTimeoutError("fetch.sh 执行超时")
 
-    monkeypatch.setattr(mcp_server.subprocess, "run", fake_run)
+    monkeypatch.setattr(mcp_server, "_run_fetch", fake_run_fetch)
     result = mcp_server.smart3w_fetch(
         "http://93.184.216.34/", mode="get", timeout=5, use_cache=False
     )

@@ -47,15 +47,19 @@ def _candidate_paths() -> list[str]:
 
 
 def binary_path() -> str | None:
-    if "path" in _BINARY_CACHE:
-        return _BINARY_CACHE["path"]
+    mode = _mode()
+    if mode == "off":
+        return None
+    env_bin = os.environ.get("SMART3W_RS_BIN") or ""
+    cache_key = f"{mode}|{env_bin}"
+    if cache_key in _BINARY_CACHE:
+        return _BINARY_CACHE[cache_key]
     resolved: str | None = None
-    if _mode() != "off":
-        for candidate in _candidate_paths():
-            if candidate and Path(candidate).is_file():
-                resolved = candidate
-                break
-    _BINARY_CACHE["path"] = resolved
+    for candidate in _candidate_paths():
+        if candidate and Path(candidate).is_file():
+            resolved = candidate
+            break
+    _BINARY_CACHE[cache_key] = resolved
     return resolved
 
 

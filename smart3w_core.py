@@ -7,6 +7,7 @@ CLI 包装层共同调用，避免“MCP → bash → Python”的重复子进�
 
 import json
 import os
+import re
 import ssl
 import sys
 import time
@@ -289,11 +290,31 @@ def _extract_blocks(container, wechat=False):
     return parts
 
 
+def _decode_html_bytes(raw: bytes) -> str:
+    """按 BOM / meta charset / 常见中文编码解码 HTML，避免 GBK 页面被静默丢弃。"""
+    if raw.startswith(b"\xef\xbb\xbf"):
+        return raw.decode("utf-8-sig", errors="replace")
+    candidates = []
+    match = re.search(rb"charset\s*=\s*['\"]?([A-Za-z0-9_.:-]+)", raw[:4096], re.I)
+    if match:
+        declared = match.group(1).decode("ascii", "ignore").lower()
+        if declared in ("gb2312", "gbk"):
+            declared = "gb18030"
+        candidates.append(declared)
+    candidates.extend(["utf-8", "gb18030"])
+    for encoding in dict.fromkeys(candidates):
+        try:
+            return raw.decode(encoding)
+        except (LookupError, UnicodeDecodeError):
+            continue
+    return raw.decode("utf-8", errors="replace")
+
+
 def compress_html(input_path, output_path):
     """使用 readability-lxml 提取正文并转为 Markdown（保留链接/列表/表格/代码块）；成功返回 True。"""
     try:
-        with open(input_path, "r", encoding="utf-8", errors="ignore") as f:
-            html = f.read()
+        with open(input_path, "rb") as f:
+            html = _decode_html_bytes(f.read())
         if not html.strip():
             return False
 
@@ -353,8 +374,8 @@ def compress_html(input_path, output_path):
 def compress_wechat(input_path, output_path):
     """微信文章专用提取（js_content / rich_media_content）；成功返回 True。"""
     try:
-        with open(input_path, "r", encoding="utf-8", errors="ignore") as f:
-            html = f.read()
+        with open(input_path, "rb") as f:
+            html = _decode_html_bytes(f.read())
         if not html.strip():
             return False
 
@@ -638,7 +659,9 @@ def _fetch_sitemap_root(url):
             blocked = url_policy_error(resp.geturl())
             if blocked:
                 raise SitemapError(f"重定向目标被拦截: {blocked}")
-            content = resp.read(MAX_SITEMAP_BYTES).decode("utf-8", errors="replace")
+            content = resp.read(MAX_SITEMAP_BYTES + 1)
+            if len(content) > MAX_SITEMAP_BYTES:
+                raise SitemapError(f"sitemap 超过大小上限 {MAX_SITEMAP_BYTES} 字节")
     except SitemapError:
         raise
     except Exception as exc:
@@ -671,6 +694,8 @@ def collect_sitemap_entries(sitemap_url, max_urls=50, recursive=False):
     entries = []
     errors = []
     visited = set()
+    seen_urls = set()
+    hit_limit = False
     queue = [(sitemap_url, 0)]
     deadline = time.monotonic() + SITEMAP_TOTAL_TIMEOUT
     while (
@@ -694,6 +719,7 @@ def collect_sitemap_entries(sitemap_url, max_urls=50, recursive=False):
         if root.tag.endswith("sitemapindex"):
             for sitemap in root.findall("{*}sitemap"):
                 if len(entries) >= max_urls:
+                    hit_limit = True
                     break
                 loc = _child_text(sitemap, "loc")
                 if not loc:
@@ -701,28 +727,27 @@ def collect_sitemap_entries(sitemap_url, max_urls=50, recursive=False):
                 loc = urllib.parse.urljoin(url, loc)
                 if recursive and depth < SITEMAP_MAX_DEPTH:
                     queue.append((loc, depth + 1))
-                else:
+                elif loc not in seen_urls:
+                    seen_urls.add(loc)
                     entries.append(("", "index", loc))
         else:
             for url_node in root.findall("{*}url"):
                 if len(entries) >= max_urls:
+                    hit_limit = True
                     break
                 loc = _child_text(url_node, "loc")
                 if not loc:
                     continue
                 loc = urllib.parse.urljoin(url, loc)
+                if loc in seen_urls:
+                    continue
+                seen_urls.add(loc)
                 lastmod = _child_text(url_node, "lastmod")[:10]
                 entries.append((lastmod, "page", loc))
 
-    # 递归时不同子 sitemap 可能包含相同 URL，按 URL 去重并保持顺序
-    unique = []
-    seen_urls = set()
-    for entry in entries:
-        if entry[2] in seen_urls:
-            continue
-        seen_urls.add(entry[2])
-        unique.append(entry)
-    return unique[:max_urls], errors, bool(queue), len(visited)
+    if len(entries) >= max_urls and queue:
+        hit_limit = True
+    return entries[:max_urls], errors, bool(queue) or hit_limit, len(visited)
 
 
 def parse_sitemap(sitemap_url, max_urls=50, recursive=False):

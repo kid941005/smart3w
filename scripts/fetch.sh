@@ -113,14 +113,24 @@ _is_valid_file() {
 }
 
 # 在进入任何抓取策略前做一次统一 URL 策略预检（allowlist / SSRF）。
-# 无 Python 或 helper 不可用时返回 0，交给具体策略报错；返回 2 表示明确拒绝。
+# 仅 rc=0 放行；rc=2 或辅助脚本执行异常（含 Python/httpx 不可用）一律拒绝，
+# 避免安全检查失效时 fail-open 直接抓取。
 _policy_check_url() {
     local url="$1"
     local rc=0
-    command -v "$PYTHON_BIN" >/dev/null 2>&1 || return 0
+    if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
+        _warn "找不到 Python 解释器（$PYTHON_BIN），无法执行 URL 策略预检，已拒绝抓取"
+        return 2
+    fi
     "$PYTHON_BIN" "$SCRIPT_DIR/smart3w_http.py" --check-policy "$url" >/dev/null 2>&1 || rc=$?
-    [[ $rc -eq 2 ]] && return 2
-    return 0
+    if [[ $rc -eq 0 ]]; then
+        return 0
+    fi
+    if [[ $rc -eq 2 ]]; then
+        return 2
+    fi
+    _warn "URL 策略预检异常（rc=$rc），按拒绝处理"
+    return 2
 }
 
 # 解析 Location（支持相对地址）。没有 Python 时只接受绝对 URL。
@@ -159,7 +169,7 @@ _fetch_by_python_http() {
     local -a args
     args=(
         "$PYTHON_BIN" "$SCRIPT_DIR/smart3w_http.py" "$url" "$output"
-        --timeout "$TIMEOUT_CURL" --ua "$USER_AGENT" --max-redirs 10
+        --timeout "$TIMEOUT_CURL" --ua "$USER_AGENT" --max-redirs "$MAX_REDIRECTS"
     )
     [[ -n "$EFFECTIVE_URL_FILE" ]] && args+=(--effective-url "$EFFECTIVE_URL_FILE")
     [[ "${SMART3W_RESPECT_ROBOTS:-0}" == "1" ]] && args+=(--respect-robots)
