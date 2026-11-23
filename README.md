@@ -442,6 +442,14 @@ services:
 
 首次部署前建议先创建目录：`mkdir -p smart3w_profiles`。
 
+`docker-compose.yml` 使用 `network_mode: host`，容器直接使用宿主机网络，不配置 `ports` 端口映射。服务监听地址由 `SMART3W_HOST` 控制（默认 `0.0.0.0`），端口由 `SMART3W_PORT` 控制（默认 `50826`）：
+
+```bash
+SMART3W_PORT=50999 docker compose up -d
+```
+
+host 模式下，容器内的 `127.0.0.1` 就是宿主机，便于访问同机 SearXNG 或代理；如需改回 bridge 模式，删除 `network_mode: host` 并自行增加 `ports`。
+
 `docker-compose.yml` 的镜像 tag 支持 `SMART3W_IMAGE_TAG`，默认 `latest`；生产环境建议固定版本，避免自动拉到不兼容的新版本：
 
 ```bash
@@ -473,8 +481,8 @@ SMART3W_IMAGE_TAG=v2.9.2 docker compose up -d
 ### 公网部署：反向代理 + API Key
 
 MCP 服务本身无内置账号体系，公网部署建议只暴露反向代理，由代理做 API Key 校验与限流。
-容器端口默认映射到宿主机所有网卡；若代理与应用同机，建议把 `docker-compose.yml` 的端口改为
-`127.0.0.1:50826:50826`，避免绕过代理直连。
+服务在 host 网络下直接监听宿主机 `SMART3W_PORT`（默认 50826）；若代理与应用同机，建议设置
+`SMART3W_HOST=127.0.0.1` 仅绑定回环，或通过防火墙限制该端口只允许代理访问，避免绕过代理直连。
 
 Nginx 示例（静态 Token 用 `map` 比较，生产可换成 auth_request / JWT 校验）：
 
