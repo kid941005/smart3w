@@ -2,7 +2,7 @@
 
 [![OpenClaw](https://img.shields.io/badge/OpenClaw-Compatible-green)](https://github.com/openclaw/openclaw)
 [![MIT](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-2.9.1-blue)](https://github.com/kid941005/smart3w/releases)
+[![Version](https://img.shields.io/badge/Version-2.9.2-blue)](https://github.com/kid941005/smart3w/releases)
 
 集 **SearXNG 网页搜索**、**Sitemap 解析** 与 **智能网页抓取** 于一体。
 
@@ -124,7 +124,7 @@ smart3w-mcp
 启动时会在 stderr 打印一行 `INFO` 日志，包含版本号与构建信息，便于确认线上实际运行的版本：
 
 ```text
-2026-11-23 15:00:00 INFO smart3w: starting smart3w-mcp version=2.9.1 commit=unknown build_time=unknown transport=streamable-http endpoint=http://0.0.0.0:50826/mcp python=3.12.11
+2026-11-23 15:00:00 INFO smart3w: starting smart3w-mcp version=2.9.2 commit=unknown build_time=unknown transport=streamable-http endpoint=http://0.0.0.0:50826/mcp python=3.12.11
 ```
 
 `commit` / `build_time` 可在构建镜像时通过 `SMART3W_BUILD_COMMIT` / `SMART3W_BUILD_TIME` 构建参数注入；官方 CI 在 tag 构建时会自动注入当前 commit 与构建时间。
@@ -445,8 +445,8 @@ services:
 `docker-compose.yml` 的镜像 tag 支持 `SMART3W_IMAGE_TAG`，默认 `latest`；生产环境建议固定版本，避免自动拉到不兼容的新版本：
 
 ```bash
-SMART3W_IMAGE_TAG=v2.9.1 docker compose pull
-SMART3W_IMAGE_TAG=v2.9.1 docker compose up -d
+SMART3W_IMAGE_TAG=v2.9.2 docker compose pull
+SMART3W_IMAGE_TAG=v2.9.2 docker compose up -d
 ```
 
 > **安全说明**：MCP 服务默认监听 `0.0.0.0:50826` 且无内置鉴权，部署到公网时请务必放在带认证/限流的
@@ -613,6 +613,16 @@ Python HTTP/curl/scrapling 策略降级，`smart3w_interact` 使用 Playwright �
 ---
 
 ## 📝 更新日志
+
+### 2.9.2
+
+- **版本号单一来源**：新增 `smart3w_version.py`，运行时、`pyproject.toml` 动态版本、User-Agent 与文档副本统一以该模块为准；README badge、SKILL.md 与版本号一致性由 `tests/test_version.py` 校验。
+- **启动日志**：MCP 服务启动时向 stderr 打印一行 INFO 日志，包含 `version`、`commit`、`build_time`、`transport`、`endpoint`、`python`；未注入构建信息时显示 `unknown`，不阻塞启动。
+- **镜像构建信息**：Dockerfile 支持 `SMART3W_BUILD_COMMIT` / `SMART3W_BUILD_TIME` 构建参数；CI 在 tag 构建时自动注入，并为镜像写入 OCI revision/created 标签。
+- **CI 校验**：容器冒烟测试新增断言，镜像内 `_build_info()['commit']` 不得为 `unknown`。
+- **部署配置**：`docker-compose.yml` 镜像 tag 支持 `SMART3W_IMAGE_TAG`，默认 `latest`，生产环境可固定版本。
+- **文档**：README 补充启动日志、构建信息注入、镜像 tag 固定与版本号单一来源说明。
+- **测试**：新增启动日志、构建信息与版本一致性测试，共 221 例通过。
 
 ### 2.9.1
 
