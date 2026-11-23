@@ -43,6 +43,55 @@ def test_main_uses_stdio_without_http_options(monkeypatch):
     assert captured == {"transport": "stdio"}
 
 
+def test_build_info_defaults_to_unknown(monkeypatch):
+    monkeypatch.delenv("SMART3W_BUILD_COMMIT", raising=False)
+    monkeypatch.delenv("SMART3W_BUILD_TIME", raising=False)
+
+    info = mcp_server._build_info()
+
+    assert info == {
+        "version": mcp_server.__version__,
+        "commit": "unknown",
+        "build_time": "unknown",
+    }
+
+
+def test_build_info_reads_environment(monkeypatch):
+    monkeypatch.setenv("SMART3W_BUILD_COMMIT", "abc1234")
+    monkeypatch.setenv("SMART3W_BUILD_TIME", "2026-11-23T15:00:00Z")
+
+    info = mcp_server._build_info()
+
+    assert info["version"] == mcp_server.__version__
+    assert info["commit"] == "abc1234"
+    assert info["build_time"] == "2026-11-23T15:00:00Z"
+
+
+def test_startup_message_contains_version_and_build_info(monkeypatch):
+    monkeypatch.setenv("SMART3W_BUILD_COMMIT", "abc1234")
+    monkeypatch.setenv("SMART3W_BUILD_TIME", "2026-11-23T15:00:00Z")
+
+    message = mcp_server._startup_message("streamable-http", "0.0.0.0", 50826, "/mcp")
+
+    assert f"version={mcp_server.__version__}" in message
+    assert "commit=abc1234" in message
+    assert "build_time=2026-11-23T15:00:00Z" in message
+    assert "transport=streamable-http" in message
+    assert "endpoint=http://0.0.0.0:50826/mcp" in message
+
+
+def test_startup_log_emits_only_once(monkeypatch):
+    calls = []
+    monkeypatch.setattr(mcp_server, "_STARTUP_LOGGED", False)
+    monkeypatch.setattr(mcp_server._startup_logger, "info", lambda message: calls.append(message))
+
+    mcp_server._log_startup("stdio", "0.0.0.0", 50826, "/mcp")
+    mcp_server._log_startup("stdio", "0.0.0.0", 50826, "/mcp")
+
+    assert len(calls) == 1
+    assert "version=" in calls[0]
+
+
 def test_fetch_blocks_private_ip_without_subprocess(monkeypatch):
     calls = []
     monkeypatch.setattr(

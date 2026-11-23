@@ -121,6 +121,15 @@ smart3w-mcp --transport stdio
 smart3w-mcp
 ```
 
+启动时会在 stderr 打印一行 `INFO` 日志，包含版本号与构建信息，便于确认线上实际运行的版本：
+
+```text
+2026-11-23 15:00:00 INFO smart3w: starting smart3w-mcp version=2.9.1 commit=unknown build_time=unknown transport=streamable-http endpoint=http://0.0.0.0:50826/mcp python=3.12.11
+```
+
+`commit` / `build_time` 可在构建镜像时通过 `SMART3W_BUILD_COMMIT` / `SMART3W_BUILD_TIME` 构建参数注入；官方 CI 在 tag 构建时会自动注入当前 commit 与构建时间。
+未注入时显示 `unknown`，不会导致启动失败。
+
 | MCP 工具 | 说明 |
 | --- | --- |
 | `smart3w_search` | SearXNG 搜索（多实例 fallback、结果去重、TTL 缓存；可选 `read_top` 直接读正文） |
@@ -380,6 +389,8 @@ Smart3W 支持自动识别并优化提取微信公众号文章。
 | `SMART3W_MAX_REDIRECTS` | `10` | curl 回退时手动跟随的最大重定向次数；每一跳都会重新做策略校验 |
 | `SMART3W_PORT` | `50826` | MCP HTTP 服务端口 |
 | `SMART3W_TIMEOUT` | `30` | MCP 层默认请求超时（秒） |
+| `SMART3W_BUILD_COMMIT` | `unknown` | 启动日志显示的构建 commit；镜像构建时通过 `--build-arg SMART3W_BUILD_COMMIT=...` 注入 |
+| `SMART3W_BUILD_TIME` | `unknown` | 启动日志显示的构建时间（ISO8601）；镜像构建时通过 `--build-arg SMART3W_BUILD_TIME=...` 注入 |
 | `SMART3W_CACHE_TTL` | `300` | 抓取结果缓存有效期（秒） |
 | `SMART3W_CACHE_SIZE` | `64` | 抓取结果缓存最大条目数（LRU 淘汰） |
 | `SMART3W_RESPECT_ROBOTS` | `0` | 单个 `smart3w_fetch` 是否默认遵守 robots.txt（`1` 开启；`smart3w_crawl` 默认开启） |
@@ -430,6 +441,13 @@ services:
 ```
 
 首次部署前建议先创建目录：`mkdir -p smart3w_profiles`。
+
+`docker-compose.yml` 的镜像 tag 支持 `SMART3W_IMAGE_TAG`，默认 `latest`；生产环境建议固定版本，避免自动拉到不兼容的新版本：
+
+```bash
+SMART3W_IMAGE_TAG=v2.9.1 docker compose pull
+SMART3W_IMAGE_TAG=v2.9.1 docker compose up -d
+```
 
 > **安全说明**：MCP 服务默认监听 `0.0.0.0:50826` 且无内置鉴权，部署到公网时请务必放在带认证/限流的
 > 反向代理后面。MCP 工具层默认开启 SSRF 防护：抓取目标解析到内网/保留地址时会被拦截
@@ -584,6 +602,8 @@ uv build
 
 CI 会在 Python 3.10 / 3.12 上运行 lint、单元测试，并校验 wheel 中是否包含
 `scripts/fetch.sh` 与 `scripts/smart3w_utils.py`。
+
+版本号唯一来源为 `smart3w_version.py`；`pyproject.toml` 使用 setuptools 动态版本读取该模块，README badge、SKILL.md 与 User-Agent 由 `tests/test_version.py` 校验一致性。
 
 架构上，MCP 的 `smart3w_search` / `smart3w_sitemap` 直接调用 `smart3w_core.py`，
 `smart3w_map` / `smart3w_crawl`（链接发现）与 `smart3w_extract`（字段抽取）复用

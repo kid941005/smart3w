@@ -14,6 +14,12 @@ RUN cd rust && cargo build --release --locked
 
 FROM python:3.12-slim-bookworm
 
+# 构建信息（可选）：
+# docker build --build-arg SMART3W_BUILD_COMMIT=$(git rev-parse --short HEAD) \
+#              --build-arg SMART3W_BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ) .
+ARG SMART3W_BUILD_COMMIT=unknown
+ARG SMART3W_BUILD_TIME=unknown
+
 ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
@@ -54,7 +60,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # --------------------------------------------------------------------------
 COPY pyproject.toml README.md MANIFEST.in LICENSE ./
 COPY scripts/ ./scripts/
-COPY mcp_server.py smart3w_content.py smart3w_core.py smart3w_discovery.py smart3w_document.py smart3w_fetch_utils.py smart3w_interact.py smart3w_url_utils.py smart3w_rust.py ./
+COPY mcp_server.py smart3w_content.py smart3w_core.py smart3w_discovery.py smart3w_document.py smart3w_fetch_utils.py smart3w_interact.py smart3w_url_utils.py smart3w_rust.py smart3w_version.py ./
 
 # 从构建阶段复制 Rust 二进制
 COPY --from=rustbuild /build/rust/target/release/smart3w-rs /usr/local/bin/smart3w-rs
@@ -69,6 +75,8 @@ ENV SMART3W_HOST=0.0.0.0
 ENV SMART3W_PORT=50826
 ENV SMART3W_TIMEOUT=30
 ENV SMART3W_RS_BIN=/usr/local/bin/smart3w-rs
+ENV SMART3W_BUILD_COMMIT=${SMART3W_BUILD_COMMIT} \
+    SMART3W_BUILD_TIME=${SMART3W_BUILD_TIME}
 
 EXPOSE 50826
 

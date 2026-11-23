@@ -25,8 +25,9 @@ from smart3w_url_utils import (  # noqa: F401  # 向后兼容：继续从本模�
     resolve_target_ips,
     ssrf_blocked,
 )
+from smart3w_version import __version__
 
-USER_AGENT = "Smart3W/2.9.1 (+https://github.com/kid941005/smart3w)"
+USER_AGENT = f"Smart3W/{__version__} (+https://github.com/kid941005/smart3w)"
 
 
 def _env_int(name: str, default: int) -> int:

@@ -30,6 +30,12 @@ jobs:
         with:
           ref: ${{ github.event.inputs.tag || github.ref_name }}
 
+      - name: Resolve build metadata
+        id: buildmeta
+        run: |
+          echo "commit=$(git rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
+          echo "time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
       - name: Install uv
         run: pip install uv
 
@@ -80,11 +86,17 @@ jobs:
           push: true
           load: true
           tags: ${{ steps.meta.outputs.tags }}
+          build-args: |
+            SMART3W_BUILD_COMMIT=${{ steps.buildmeta.outputs.commit }}
+            SMART3W_BUILD_TIME=${{ steps.buildmeta.outputs.time }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.created=${{ steps.buildmeta.outputs.time }}
 
       - name: Smoke test container startup
         run: |
           IMG="${{ env.DOCKER_IMAGE }}:${{ steps.meta.outputs.tag }}"
-          docker run --rm --entrypoint python3 "$IMG" -c "import mcp_server; print('container import OK')"
+          docker run --rm --entrypoint python3 "$IMG" -c "import mcp_server; info = mcp_server._build_info(); assert info['commit'] != 'unknown', info; print('container import OK', info['version'], info['commit'], info['build_time'])"
 
       - name: Create GitHub Release (tag push only)
         if: github.event_name == 'push'

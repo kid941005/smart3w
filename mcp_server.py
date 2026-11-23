@@ -4,6 +4,7 @@
 import argparse
 import asyncio
 import json
+import logging
 import os
 import re
 import shutil
@@ -47,8 +48,52 @@ from smart3w_interact import (
     validate_profile,
 )
 from smart3w_url_utils import normalize_url, ssrf_blocked, url_policy_error, url_shape_error
+from smart3w_version import __version__
 
-__version__ = "2.9.1"
+# 版本号唯一来源：smart3w_version.__version__。
+
+# 启动日志只打印一次；重复调用 main() / 多次初始化不会重复刷屏。
+_STARTUP_LOGGED = False
+_startup_logger = logging.getLogger("smart3w")
+
+
+def _build_info() -> dict[str, str]:
+    """返回启动日志使用的构建信息；缺失时降级为 unknown。"""
+    return {
+        "version": __version__,
+        "commit": (os.getenv("SMART3W_BUILD_COMMIT") or "").strip() or "unknown",
+        "build_time": (os.getenv("SMART3W_BUILD_TIME") or "").strip() or "unknown",
+    }
+
+
+def _startup_message(transport: str, host: str, port: int, path: str) -> str:
+    info = _build_info()
+    endpoint = f"http://{host}:{port}{path}" if transport == "streamable-http" else "stdio"
+    python = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+    return (
+        f"starting smart3w-mcp version={info['version']} "
+        f"commit={info['commit']} build_time={info['build_time']} "
+        f"transport={transport} endpoint={endpoint} python={python}"
+    )
+
+
+def _log_startup(transport: str, host: str, port: int, path: str) -> None:
+    """在服务启动前打印一行 INFO 日志；未配置构建信息时输出 unknown。"""
+    global _STARTUP_LOGGED
+    if _STARTUP_LOGGED:
+        return
+    if not _startup_logger.handlers:
+        handler = logging.StreamHandler()
+        handler.setLevel(logging.INFO)
+        handler.setFormatter(
+            logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
+        )
+        _startup_logger.addHandler(handler)
+    _startup_logger.setLevel(logging.INFO)
+    _startup_logger.propagate = False
+    _startup_logger.info(_startup_message(transport, host, port, path))
+    _STARTUP_LOGGED = True
+
 
 SERVER_DIR = Path(__file__).resolve().parent
 FETCH_SH = SERVER_DIR / "scripts" / "fetch.sh"
@@ -1719,12 +1764,14 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
     if args.transport not in ("stdio", "streamable-http"):
         parser.error(f"无效的 MCP_TRANSPORT: {args.transport}（可选 stdio/streamable-http）")
+    path = (os.getenv("MCP_PATH") or "/mcp").strip() or "/mcp"
+    _log_startup(args.transport, DEFAULT_HOST, DEFAULT_PORT, path)
     if args.transport == "streamable-http":
         mcp.run(
             transport="streamable-http",
             host=DEFAULT_HOST,
             port=DEFAULT_PORT,
-            streamable_http_path=(os.getenv("MCP_PATH") or "/mcp").strip() or "/mcp",
+            streamable_http_path=path,
         )
     else:
         mcp.run(transport="stdio")
