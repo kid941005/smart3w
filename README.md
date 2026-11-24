@@ -2,7 +2,7 @@
 
 [![OpenClaw](https://img.shields.io/badge/OpenClaw-Compatible-green)](https://github.com/openclaw/openclaw)
 [![MIT](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-2.11.0-blue)](https://github.com/kid941005/smart3w/releases)
+[![Version](https://img.shields.io/badge/Version-2.11.1-blue)](https://github.com/kid941005/smart3w/releases)
 
 集 **SearXNG 网页搜索**、**Sitemap 解析** 与 **智能网页抓取** 于一体。
 
@@ -124,7 +124,7 @@ smart3w-mcp
 启动时会在 stderr 打印一行 `INFO` 日志，包含版本号与构建信息，便于确认线上实际运行的版本：
 
 ```text
-2026-11-23 15:00:00 INFO smart3w: starting smart3w-mcp version=2.11.0 commit=unknown build_time=unknown transport=streamable-http endpoint=http://0.0.0.0:50826/mcp python=3.12.11
+2026-11-23 15:00:00 INFO smart3w: starting smart3w-mcp version=2.11.1 commit=unknown build_time=unknown transport=streamable-http endpoint=http://0.0.0.0:50826/mcp python=3.12.11
 ```
 
 `commit` / `build_time` 可在构建镜像时通过 `SMART3W_BUILD_COMMIT` / `SMART3W_BUILD_TIME` 构建参数注入；官方 CI 在 tag 构建时会自动注入当前 commit 与构建时间。
@@ -478,7 +478,7 @@ SMART3W_HOST=127.0.0.1 SMART3W_PORT=50999 docker compose up -d
 
 ```dotenv
 # .env
-SMART3W_IMAGE_TAG=v2.11.0
+SMART3W_IMAGE_TAG=v2.11.1
 SMART3W_HOST=127.0.0.1
 SMART3W_PORT=50999
 ```
@@ -492,8 +492,8 @@ docker compose up -d
 `docker-compose.yml` 的镜像 tag 支持 `SMART3W_IMAGE_TAG`，默认 `latest`；生产环境建议固定版本，避免自动拉到不兼容的新版本：
 
 ```bash
-SMART3W_IMAGE_TAG=v2.11.0 docker compose pull
-SMART3W_IMAGE_TAG=v2.11.0 docker compose up -d
+SMART3W_IMAGE_TAG=v2.11.1 docker compose pull
+SMART3W_IMAGE_TAG=v2.11.1 docker compose up -d
 ```
 
 > **安全说明**：MCP 服务默认监听 `0.0.0.0:50826` 且无内置鉴权，部署到公网时请务必放在带认证/限流的
@@ -662,6 +662,13 @@ CI 会在 Python 3.10 / 3.12 上运行 lint、单元测试，并校验 wheel 中
 ---
 
 ## 📝 更新日志
+
+### 2.11.1
+
+- **修复（crawl 错误码）**：`smart3w_mcp_tools/crawl.py` 使用 `srv.is_rate_limited` 但主服务未导入，失败路径会抛 `AttributeError` 并把原始 `FETCH_FAILED` 误报为 `INTERNAL_ERROR`；补齐导入并加回归测试。
+- **安全（SSRF fail-closed）**：代理模式下 DNS 解析失败不再放行，改为拒绝；显式 `SMART3W_ALLOWED_HOSTS` 命中的主机保持放行，避免 DNS 故障时绕过 SSRF 检查。
+- **安全（ZIP 解压炸弹）**：Office/文档解析新增解压后总大小与条目数上限，默认 `SMART3W_MAX_UNCOMPRESSED_DOCUMENT_BYTES=200MB`、最多 10000 个条目，超限返回明确错误。
+- **测试**：新增 crawl 错误码、代理 DNS fail-closed、ZIP 炸弹拒绝回归测试；共 235 例通过。
 
 ### 2.11.0
 

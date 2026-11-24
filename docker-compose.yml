@@ -1,6 +1,6 @@
 services:
   smart3w-mcp:
-    # 默认 latest；生产建议固定版本，例如 SMART3W_IMAGE_TAG=v2.11.0 docker compose up -d
+    # 默认 latest；生产建议固定版本，例如 SMART3W_IMAGE_TAG=v2.11.1 docker compose up -d
     image: kid941005/smart3w-mcp:${SMART3W_IMAGE_TAG:-latest}
     container_name: smart3w-mcp
     restart: unless-stopped
