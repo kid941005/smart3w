@@ -202,6 +202,30 @@ def test_ssrf_blocked_blocks_hostname_resolving_to_private(monkeypatch):
     assert "10.0.0.5" in err
 
 
+def test_ssrf_blocked_fails_closed_when_proxy_dns_resolution_fails(monkeypatch):
+    monkeypatch.setenv("SMART3W_PROXY_URL", "http://proxy:8080")
+    monkeypatch.delenv("SMART3W_TRUST_PROXY_DNS", raising=False)
+    monkeypatch.delenv("NO_PROXY", raising=False)
+    monkeypatch.delenv("no_proxy", raising=False)
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *args, **kwargs: (_ for _ in ()).throw(socket.gaierror("dns failed")))
+
+    err = ssrf_blocked("https://internal.example.com/")
+    assert err is not None
+    assert "拒绝放行" in err
+
+
+def test_ssrf_blocked_fails_closed_for_standard_proxy_env(monkeypatch):
+    for name in ("SMART3W_PROXY_URL", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("HTTP_PROXY", "http://proxy:8080")
+    monkeypatch.delenv("SMART3W_TRUST_PROXY_DNS", raising=False)
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *args, **kwargs: (_ for _ in ()).throw(socket.gaierror("dns failed")))
+
+    err = ssrf_blocked("https://internal.example.com/")
+    assert err is not None
+    assert "拒绝放行" in err
+
+
 def test_ssrf_blocked_allow_private_ips_env(monkeypatch):
     monkeypatch.setenv("SMART3W_ALLOW_PRIVATE_IPS", "1")
     assert ssrf_blocked("http://127.0.0.1/") is None

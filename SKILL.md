@@ -298,6 +298,7 @@ cargo build --release --locked
 | `SMART3W_MAX_FETCH_SECONDS` | `110` | 单次抓取子进程整体墙钟上限（秒） |
 | `SMART3W_MAX_SUBPROCESS_OUTPUT_BYTES` | `4194304` | 子进程 stdout/stderr 保留上限（字节） |
 | `SMART3W_MAX_DOCUMENT_BYTES` | `52428800` | PDF/Office/CSV 解析输入上限（字节，默认 50MB） |
+| `SMART3W_MAX_UNCOMPRESSED_DOCUMENT_BYTES` | `209715200` | Office ZIP 解压后总大小上限（字节，默认 200MB），用于防止 ZIP 炸弹 |
 | `SMART3W_INTERACT_MAX_SECONDS` | `300` | `smart3w_interact` 单次交互总时长上限（秒） |
 | `SMART3W_DNS_TIMEOUT` | `5` | SSRF 校验 DNS 解析超时（秒） |
 | `SMART3W_ALLOW_SERVICE_WORKERS` | `0` | 是否允许 Service Worker；默认阻断以保持 SSRF 防线 |

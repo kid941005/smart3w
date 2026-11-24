@@ -335,6 +335,22 @@ def test_crawl_reports_invalid_and_duplicate_urls(monkeypatch):
     assert result["success"] is False
 
 
+def test_crawl_preserves_fetch_error_code(monkeypatch):
+    monkeypatch.setattr(
+        mcp_server,
+        "_run_fetch_file",
+        lambda *args, **kwargs: {
+            "success": False,
+            "url": "https://example.com",
+            "error": "fetch failed",
+            "error_code": "FETCH_FAILED",
+        },
+    )
+    result = mcp_server.smart3w_crawl(["https://example.com"], mode="get")
+
+    assert result["results"][0]["error_code"] == "FETCH_FAILED"
+
+
 def test_crawl_preserves_input_order(monkeypatch):
     def fake_fetch(url, *args, **kwargs):
         time.sleep(0.05 if "slow" in url else 0)

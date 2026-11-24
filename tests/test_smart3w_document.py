@@ -30,6 +30,19 @@ def test_document_size_limit_rejects_oversized_file(tmp_path, monkeypatch):
     assert "过大" in str(exc.value)
 
 
+def test_zip_bomb_rejected_before_office_parser(tmp_path, monkeypatch):
+    import zipfile
+
+    path = tmp_path / "bomb.docx"
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("word/document.xml", "hello world")
+    monkeypatch.setenv("SMART3W_MAX_UNCOMPRESSED_DOCUMENT_BYTES", "1")
+
+    with pytest.raises(DocumentError) as exc:
+        extract_document_file(path)
+    assert "解压后过大" in str(exc.value)
+
+
 def test_detect_kind_by_content_type_and_extension(tmp_path):
     path = tmp_path / "unknown.bin"
     path.write_bytes(b"PK\x03\x04not-a-real-zip")

@@ -183,6 +183,36 @@ def _max_document_bytes() -> int:
     return value if value > 0 else 50 * 1024 * 1024
 
 
+_MAX_ZIP_ENTRIES = 10_000
+
+
+def _max_uncompressed_document_bytes() -> int:
+    """Office ZIP 文档解压后总大小上限；非正整数回退 200MB。"""
+    raw = os.environ.get("SMART3W_MAX_UNCOMPRESSED_DOCUMENT_BYTES")
+    if raw is None:
+        return 200 * 1024 * 1024
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return 200 * 1024 * 1024
+    return value if value > 0 else 200 * 1024 * 1024
+
+
+def _check_zip_safety(path: Path) -> None:
+    """在解析 Office ZIP 文档前检查条目数与解压后总量，防止 ZIP 炸弹。"""
+    try:
+        with zipfile.ZipFile(path) as archive:
+            infos = archive.infolist()
+    except (OSError, zipfile.BadZipFile) as exc:
+        raise DocumentError(f"无法读取 Office 文档: {exc}") from exc
+    if len(infos) > _MAX_ZIP_ENTRIES:
+        raise DocumentError(f"Office 文档条目过多（{len(infos)} > {_MAX_ZIP_ENTRIES}）")
+    total = sum(info.file_size for info in infos)
+    limit = _max_uncompressed_document_bytes()
+    if total > limit:
+        raise DocumentError(f"文档解压后过大（{total} 字节，上限 {limit} 字节）")
+
+
 def _pdf_to_markdown(path: Path) -> tuple[str, dict[str, Any]]:
     pypdf_error: Exception | None = None
     PdfReader: Any = None
@@ -403,6 +433,8 @@ def extract_document_file(
         raise NotADocument("不是支持的文档格式")
     if kind in {"doc", "xls", "ppt"}:
         raise DocumentError(f"暂不支持旧版 Office .{kind} 文件，请另存为 .{kind}x 后重试")
+    if kind in {"docx", "xlsx", "pptx"}:
+        _check_zip_safety(source)
 
     extracted = _extract_with_rust(kind, source)
     if extracted is not None:

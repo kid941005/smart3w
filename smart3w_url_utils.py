@@ -73,6 +73,15 @@ _FALSE_VALUES = frozenset({"0", "false", "no", "off", ""})
 ALLOWED_HOSTS_ENV = "SMART3W_ALLOWED_HOSTS"
 PROXY_URL_ENV = "SMART3W_PROXY_URL"
 TRUST_PROXY_DNS_ENV = "SMART3W_TRUST_PROXY_DNS"
+_PROXY_ENV_KEYS = (
+    "SMART3W_PROXY_URL",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+)
 
 
 def _normalize_allowed_host(entry: str) -> str | None:
@@ -153,6 +162,11 @@ def env_flag(name: str, default: bool = False) -> bool:
 def proxy_url() -> str:
     """读取显式出口代理地址；空字符串表示未配置。"""
     return (os.environ.get(PROXY_URL_ENV) or "").strip()
+
+
+def proxy_configured() -> bool:
+    """任一标准代理变量已配置时返回 True（用于 DNS 失败的 fail-closed 判断）。"""
+    return any((os.environ.get(name) or "").strip() for name in _PROXY_ENV_KEYS)
 
 
 def trust_proxy_dns() -> bool:
@@ -295,7 +309,15 @@ def ssrf_blocked(url: str) -> str | None:
             return None  # 由可信代理解析目标域名
         ips = resolve_target_ips(host)
         if not ips:
-            return None  # 解析失败交给抓取层报错，避免误拦
+            # 显式白名单是运维已知目标，DNS 失败时保持原有放行语义。
+            allowed = get_allowed_hosts()
+            if allowed and host_is_allowed(host, allowed):
+                return None
+            # 代理模式下不能把本地 DNS 失败当成公网目标放行：代理可能自行解析
+            # 到内网地址，形成 SSRF 绕过。仅直连模式才交给抓取层报错。
+            if proxy_configured() and not host_bypasses_proxy(host):
+                return "目标域名本地解析失败，代理模式下拒绝放行"
+            return None
         blocked = [ip for ip in ips if is_private_ip(ip)]
         if blocked:
             return f"目标主机解析到内网/保留地址，已拦截: {', '.join(blocked)}"

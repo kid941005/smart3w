@@ -393,6 +393,7 @@ Smart3W 支持自动识别并优化提取微信公众号文章。
 | `SMART3W_MAX_FETCH_SECONDS` | `110` | 单次抓取子进程的整体墙钟上限（秒）；smart 多策略重试不会超过该值，应小于 MCP 客户端超时 |
 | `SMART3W_MAX_SUBPROCESS_OUTPUT_BYTES` | `4194304` | 单次抓取保留的子进程 stdout/stderr 上限（字节），超出截断 |
 | `SMART3W_MAX_DOCUMENT_BYTES` | `52428800` | PDF/Office/CSV 文档解析输入上限（字节，默认 50MB） |
+| `SMART3W_MAX_UNCOMPRESSED_DOCUMENT_BYTES` | `209715200` | Office ZIP 文档解压后总大小上限（字节，默认 200MB），用于防止 ZIP 炸弹 |
 | `SMART3W_INTERACT_MAX_SECONDS` | `300` | `smart3w_interact` 单次交互总时长上限（秒） |
 | `SMART3W_DNS_TIMEOUT` | `5` | SSRF 校验时 DNS 解析超时（秒）；超时按解析失败处理 |
 | `SMART3W_ALLOW_SERVICE_WORKERS` | `0` | 是否允许 Service Worker；默认 `0` 阻断，避免绕过请求级 SSRF/allowlist 校验 |

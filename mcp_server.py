@@ -43,6 +43,7 @@ from smart3w_fetch_utils import (
     RobotsChecker,
     TTLCache,
     apply_window,
+    is_rate_limited,  # noqa: F401 - 供 smart3w_mcp_tools 通过 srv 动态访问
 )
 from smart3w_interact import (  # noqa: F401 - 供 smart3w_mcp_tools 通过 srv 动态访问
     InteractionError,
