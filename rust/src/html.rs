@@ -47,6 +47,43 @@ fn pick_root<'a>(doc: &'a Html, extract: Extract) -> Option<ElementRef<'a>> {
     }
 }
 
+/// 把懒加载属性提升为普通 src，避免 html2md 生成空图片链接 ![]()。
+fn promote_lazy_images(html: &str) -> String {
+    let mut out = String::with_capacity(html.len());
+    let mut rest = html;
+    while let Some(start) = rest.find("<img") {
+        out.push_str(&rest[..start]);
+        let after = &rest[start..];
+        let Some(end) = after.find('>') else {
+            out.push_str(after);
+            return out;
+        };
+        let tag = &after[..=end];
+        out.push_str(tag);
+        if !tag.contains(" src=") {
+            for attr in ["data-src=", "data-original="] {
+                if let Some(pos) = tag.find(attr) {
+                    let value_start = pos + attr.len();
+                    let quote = tag.as_bytes().get(value_start).copied().unwrap_or(b'"');
+                    if quote == b'"' || quote == b'\'' {
+                        if let Some(value_end) = tag[value_start + 1..].find(quote as char) {
+                            let value = &tag[value_start + 1..value_start + 1 + value_end];
+                            if !value.trim().is_empty() {
+                                let insert_at = out.len() - 1;
+                                out.insert_str(insert_at, &format!(" src=\"{}\"", value));
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        rest = &after[end + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
 fn collapse_blank(text: &str) -> String {
     let mut out: Vec<&str> = Vec::new();
     let mut blanks = 0usize;
@@ -80,6 +117,7 @@ pub fn to_markdown(html: &str, extract: Extract) -> Result<(String, String), Str
         None => html.to_string(),
     };
 
+    let inner_html = promote_lazy_images(&inner_html);
     let mut md = html2md::parse_html(&inner_html);
     md = collapse_blank(&md);
     if md.is_empty() {

@@ -12,3 +12,4 @@ recursive-include rust/src *.rs
 include rust/Cargo.lock
 recursive-include tests *.py
 recursive-include tests/fixtures *
+include uv.lock

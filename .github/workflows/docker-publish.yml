@@ -30,6 +30,15 @@ jobs:
         with:
           ref: ${{ github.event.inputs.tag || github.ref_name }}
 
+      - name: Verify tag matches package version
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          VER=$(python3 -c "from smart3w_version import __version__; print(__version__)")
+          if [ "v$VER" != "$TAG" ]; then
+            echo "::error::git tag '$TAG' 与 smart3w_version.__version__ 'v$VER' 不一致"
+            exit 1
+          fi
+
       - name: Resolve build metadata
         id: buildmeta
         run: |
@@ -88,11 +97,11 @@ jobs:
           fi
           echo "tags=$TAGS" >> "$GITHUB_OUTPUT"
 
-      - name: Build and push
+      - name: Build and load image (not yet pushed)
         uses: docker/build-push-action@v6
         with:
           context: .
-          push: true
+          push: false
           load: true
           tags: ${{ steps.meta.outputs.tags }}
           build-args: |
@@ -106,6 +115,13 @@ jobs:
         run: |
           IMG="${{ env.DOCKER_IMAGE }}:${{ steps.meta.outputs.tag }}"
           docker run --rm --entrypoint python3 "$IMG" -c "import mcp_server; info = mcp_server._build_info(); assert info['commit'] != 'unknown', info; print('container import OK', info['version'], info['commit'], info['build_time'])"
+
+      - name: Push image after smoke test passes
+        run: |
+          IFS=',' read -ra TAGS <<< "${{ steps.meta.outputs.tags }}"
+          for tag in "${TAGS[@]}"; do
+            docker push "$tag"
+          done
 
       - name: Create GitHub Release (tag push only)
         if: github.event_name == 'push'

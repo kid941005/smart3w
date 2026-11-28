@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import csv as _csv
 import io
 import os
 import re
@@ -50,6 +51,10 @@ _EXTENSION_KIND = {
     ".csv": "csv",
 }
 
+_MAX_ZIP_ENTRIES = 10_000
+_CELL_RE = re.compile(r"^([A-Z]+)(\d+)$")
+_DIMENSION_RE = re.compile(r"^([A-Z]+\d+)(?::([A-Z]+\d+))?$")
+
 
 class NotADocument(Exception):
     """目标不是可识别的文档格式。"""
@@ -57,6 +62,53 @@ class NotADocument(Exception):
 
 class DocumentError(RuntimeError):
     """文档已识别但解析失败。"""
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
+
+
+def _max_document_bytes() -> int:
+    """文档解析输入上限；非正整数回退 50MB，避免超大文件读满内存。"""
+    return _env_int("SMART3W_MAX_DOCUMENT_BYTES", 50 * 1024 * 1024)
+
+
+def _max_document_text_bytes() -> int:
+    """解析后 Markdown 文本上限；防止小输入放大成超大输出。"""
+    return _env_int("SMART3W_MAX_DOCUMENT_TEXT_BYTES", 10 * 1024 * 1024)
+
+
+def _max_table_cells() -> int:
+    return _env_int("SMART3W_MAX_TABLE_CELLS", 2_000_000)
+
+
+def _max_table_columns() -> int:
+    return _env_int("SMART3W_MAX_TABLE_COLUMNS", 10_000)
+
+
+def _max_table_rows() -> int:
+    return _env_int("SMART3W_MAX_TABLE_ROWS", 500_000)
+
+
+def _max_uncompressed_document_bytes() -> int:
+    """Office ZIP 文档解压后总大小上限；非正整数回退 200MB。"""
+    return _env_int("SMART3W_MAX_UNCOMPRESSED_DOCUMENT_BYTES", 200 * 1024 * 1024)
+
+
+def _truncate_text(text: str, max_bytes: int) -> tuple[str, bool]:
+    """按 UTF-8 字节数截断，避免截断在多字节字符中间。"""
+    encoded = text.encode("utf-8", errors="replace")
+    if len(encoded) <= max_bytes:
+        return text, False
+    truncated = encoded[:max_bytes].decode("utf-8", errors="ignore")
+    return truncated, True
 
 
 def _content_type_base(content_type: str) -> str:
@@ -68,9 +120,33 @@ def _url_suffix(url: str) -> str:
     return Path(path).suffix.lower()
 
 
-def _zip_kind(path: Path) -> str | None:
+def _check_zip_infos(infos: list[zipfile.ZipInfo]) -> None:
+    """检查条目数与解压后总量；超限抛 DocumentError。"""
+    if len(infos) > _MAX_ZIP_ENTRIES:
+        raise DocumentError(f"Office 文档条目过多（{len(infos)} > {_MAX_ZIP_ENTRIES}）")
+    total = sum(info.file_size for info in infos)
+    limit = _max_uncompressed_document_bytes()
+    if total > limit:
+        raise DocumentError(f"文档解压后过大（{total} 字节，上限 {limit} 字节）")
+
+
+def _check_zip_safety(path: Path) -> None:
+    """在解析 Office ZIP 文档前检查条目数与解压后总量，防止 ZIP 炸弹。"""
     try:
         with zipfile.ZipFile(path) as archive:
+            infos = archive.infolist()
+    except (OSError, zipfile.BadZipFile) as exc:
+        raise DocumentError(f"无法读取 Office 文档: {exc}") from exc
+    _check_zip_infos(infos)
+
+
+def _zip_kind(path: Path) -> str | None:
+    # 安全检查必须在 namelist() 之前：否则超大 ZIP 会先被完整枚举。
+    # 仅文件头像 ZIP 但实际损坏（BadZipFile）时回退到 Content-Type/扩展名判断。
+    try:
+        with zipfile.ZipFile(path) as archive:
+            infos = archive.infolist()
+            _check_zip_infos(infos)
             names = set(archive.namelist())
     except (OSError, zipfile.BadZipFile):
         return None
@@ -111,6 +187,29 @@ def detect_kind(path: str | Path, content_type: str = "", url: str = "") -> str 
     if by_path:
         return by_path
     return _EXTENSION_KIND.get(_url_suffix(url))
+
+
+def _cell_position(ref: str) -> tuple[int, int] | None:
+    match = _CELL_RE.match(ref.strip().upper())
+    if not match:
+        return None
+    letters, digits = match.groups()
+    col = 0
+    for ch in letters:
+        col = col * 26 + (ord(ch) - ord("A") + 1)
+    return int(digits), col
+
+
+def _dimension_size(reference: str) -> tuple[int, int] | None:
+    match = _DIMENSION_RE.match(reference.strip().upper())
+    if not match:
+        return None
+    start, end = match.groups()
+    first = _cell_position(start)
+    last = _cell_position(end or start)
+    if not first or not last:
+        return None
+    return max(first[0], last[0]), max(first[1], last[1])
 
 
 def _table_to_markdown(table: Any) -> str:
@@ -157,7 +256,7 @@ def _docx_to_markdown(path: Path) -> tuple[str, dict[str, Any]]:
             paragraphs += 1
             style = (paragraph.style.name if paragraph.style is not None else "") or ""
             lowered = style.lower()
-            if "heading" in lowered or "标题" in style:
+            if "heading" in lowered or "\u6807\u9898" in style:
                 match = re.search(r"(\d+)", style)
                 level = min(max(int(match.group(1)) if match else 1, 1), 6)
                 blocks.append("#" * level + " " + text)
@@ -171,49 +270,8 @@ def _docx_to_markdown(path: Path) -> tuple[str, dict[str, Any]]:
     return "\n\n".join(blocks), {"paragraphs": paragraphs, "tables": tables}
 
 
-def _max_document_bytes() -> int:
-    """文档解析输入上限；非正整数回退 50MB，避免超大文件读满内存。"""
-    raw = os.environ.get("SMART3W_MAX_DOCUMENT_BYTES")
-    if raw is None:
-        return 50 * 1024 * 1024
-    try:
-        value = int(raw)
-    except (TypeError, ValueError):
-        return 50 * 1024 * 1024
-    return value if value > 0 else 50 * 1024 * 1024
-
-
-_MAX_ZIP_ENTRIES = 10_000
-
-
-def _max_uncompressed_document_bytes() -> int:
-    """Office ZIP 文档解压后总大小上限；非正整数回退 200MB。"""
-    raw = os.environ.get("SMART3W_MAX_UNCOMPRESSED_DOCUMENT_BYTES")
-    if raw is None:
-        return 200 * 1024 * 1024
-    try:
-        value = int(raw)
-    except (TypeError, ValueError):
-        return 200 * 1024 * 1024
-    return value if value > 0 else 200 * 1024 * 1024
-
-
-def _check_zip_safety(path: Path) -> None:
-    """在解析 Office ZIP 文档前检查条目数与解压后总量，防止 ZIP 炸弹。"""
-    try:
-        with zipfile.ZipFile(path) as archive:
-            infos = archive.infolist()
-    except (OSError, zipfile.BadZipFile) as exc:
-        raise DocumentError(f"无法读取 Office 文档: {exc}") from exc
-    if len(infos) > _MAX_ZIP_ENTRIES:
-        raise DocumentError(f"Office 文档条目过多（{len(infos)} > {_MAX_ZIP_ENTRIES}）")
-    total = sum(info.file_size for info in infos)
-    limit = _max_uncompressed_document_bytes()
-    if total > limit:
-        raise DocumentError(f"文档解压后过大（{total} 字节，上限 {limit} 字节）")
-
-
 def _pdf_to_markdown(path: Path) -> tuple[str, dict[str, Any]]:
+    max_text = _max_document_text_bytes()
     pypdf_error: Exception | None = None
     PdfReader: Any = None
     try:
@@ -225,6 +283,9 @@ def _pdf_to_markdown(path: Path) -> tuple[str, dict[str, Any]]:
     if PdfReader is not None:
         try:
             pages: list[str] = []
+            failed_pages = 0
+            total = 0
+            truncated = False
             reader = PdfReader(str(path))
             if reader.is_encrypted:
                 try:
@@ -235,15 +296,27 @@ def _pdf_to_markdown(path: Path) -> tuple[str, dict[str, Any]]:
                     raise DocumentError("PDF 已加密，无法解析")
             for page in reader.pages:
                 try:
-                    pages.append((page.extract_text() or "").strip())
+                    page_text = (page.extract_text() or "").strip()
                 except Exception:
-                    pages.append("")
+                    page_text = ""
+                    failed_pages += 1
+                pages.append(page_text)
+                total += len(page_text.encode("utf-8", errors="replace"))
+                if total > max_text:
+                    truncated = True
+                    break
+            if failed_pages:
+                # 任一本页抛异常都不静默跳过，交给 pdfplumber 完整重试
+                raise RuntimeError(f"pypdf 有 {failed_pages} 页提取失败，改用 pdfplumber")
             text = "\n\n".join(page for page in pages if page)
-            return text, {"pages": len(pages)}
+            meta: dict[str, Any] = {"pages": len(reader.pages)}
+            text, cut = _truncate_text(text, max_text)
+            if truncated or cut:
+                meta["truncated"] = True
+            return text, meta
         except DocumentError:
             raise
         except Exception as exc:
-            # pypdf 对部分损坏/加密变体较脆弱，继续尝试 pdfplumber
             pypdf_error = exc
 
     try:
@@ -254,11 +327,24 @@ def _pdf_to_markdown(path: Path) -> tuple[str, dict[str, Any]]:
         raise DocumentError("解析 PDF 需要 pypdf 或 pdfplumber，请安装 pypdf") from exc
     try:
         with pdfplumber.open(str(path)) as pdf:
-            pages = [((page.extract_text() or "").strip()) for page in pdf.pages]
+            pages = []
+            total = 0
+            truncated = False
+            for page in pdf.pages:
+                page_text = (page.extract_text() or "").strip()
+                pages.append(page_text)
+                total += len(page_text.encode("utf-8", errors="replace"))
+                if total > max_text:
+                    truncated = True
+                    break
+            text = "\n\n".join(page for page in pages if page)
+            meta = {"pages": len(pdf.pages)}
+            text, cut = _truncate_text(text, max_text)
+            if truncated or cut:
+                meta["truncated"] = True
     except Exception as exc:
         raise DocumentError(f"PDF 解析失败: {exc}") from exc
-    text = "\n\n".join(page for page in pages if page)
-    return text, {"pages": len(pages)}
+    return text, meta
 
 
 def _xlsx_to_markdown(path: Path) -> tuple[str, dict[str, Any]]:
@@ -269,18 +355,50 @@ def _xlsx_to_markdown(path: Path) -> tuple[str, dict[str, Any]]:
 
     blocks: list[str] = []
     sheets: list[str] = []
+    max_text = _max_document_text_bytes()
+    max_rows = _max_table_rows()
+    max_cols = _max_table_columns()
+    max_cells = _max_table_cells()
+    total_bytes = 0
+    truncated = False
     try:
         workbook = openpyxl.load_workbook(str(path), read_only=True, data_only=True)
     except Exception as exc:
         raise DocumentError(f"XLSX 解析失败: {exc}") from exc
     try:
         for worksheet in workbook.worksheets:
+            try:
+                dimension = worksheet.calculate_dimension()
+            except Exception:
+                dimension = ""
+            size = _dimension_size(dimension) if dimension else None
+            if size and (
+                size[0] > max_rows
+                or size[1] > max_cols
+                or size[0] * size[1] > max_cells
+            ):
+                raise DocumentError(
+                    f"XLSX 工作表过大（{worksheet.title}: {size[0]} 行 x {size[1]} 列）"
+                )
             rows: list[list[str]] = []
+            cell_count = 0
             for row in worksheet.iter_rows(values_only=True):
+                if len(rows) >= max_rows:
+                    truncated = True
+                    break
                 values = ["" if value is None else str(value) for value in row]
                 while values and not values[-1]:
                     values.pop()
                 if any(values):
+                    if len(values) > max_cols:
+                        raise DocumentError(
+                            f"XLSX 工作表列数过多（{worksheet.title}: {len(values)} > {max_cols}）"
+                        )
+                    cell_count += len(values)
+                    if cell_count > max_cells:
+                        raise DocumentError(
+                            f"XLSX 工作表单元格过多（{worksheet.title}: 超过 {max_cells}）"
+                        )
                     rows.append([value.replace("|", "\\|").replace("\n", "<br>") for value in values])
             if not rows:
                 continue
@@ -292,11 +410,20 @@ def _xlsx_to_markdown(path: Path) -> tuple[str, dict[str, Any]]:
                 "| " + " | ".join(["---"] * width) + " |",
             ]
             lines.extend("| " + " | ".join(row) + " |" for row in rows[1:])
-            blocks.append(f"## {worksheet.title}\n\n" + "\n".join(lines))
+            block = f"## {worksheet.title}\n\n" + "\n".join(lines)
+            total_bytes += len(block.encode("utf-8", errors="replace"))
+            if total_bytes > max_text:
+                truncated = True
+                break
+            blocks.append(block)
             sheets.append(worksheet.title)
     finally:
         workbook.close()
-    return "\n\n".join(blocks), {"sheets": sheets}
+    markdown = "\n\n".join(blocks)
+    meta: dict[str, Any] = {"sheets": sheets}
+    if truncated:
+        meta["truncated"] = True
+    return markdown, meta
 
 
 def _pptx_to_markdown(path: Path) -> tuple[str, dict[str, Any]]:
@@ -310,7 +437,10 @@ def _pptx_to_markdown(path: Path) -> tuple[str, dict[str, Any]]:
     except Exception as exc:
         raise DocumentError(f"PPTX 解析失败: {exc}") from exc
 
+    max_text = _max_document_text_bytes()
     slides: list[str] = []
+    total_bytes = 0
+    truncated = False
     for index, slide in enumerate(presentation.slides, 1):
         parts: list[str] = []
         for shape in slide.shapes:
@@ -331,32 +461,72 @@ def _pptx_to_markdown(path: Path) -> tuple[str, dict[str, Any]]:
             if notes:
                 parts.append("Notes:\n" + notes)
         body = "\n\n".join(parts)
-        slides.append(f"## Slide {index}\n\n{body}" if body else f"## Slide {index}")
-    return "\n\n".join(slides), {"slides": len(slides)}
+        block = f"## Slide {index}\n\n{body}" if body else f"## Slide {index}"
+        total_bytes += len(block.encode("utf-8", errors="replace"))
+        if total_bytes > max_text:
+            truncated = True
+            break
+        slides.append(block)
+    meta: dict[str, Any] = {"slides": len(slides)}
+    if truncated:
+        meta["truncated"] = True
+    return "\n\n".join(slides), meta
+
+
+_CSV_ENCODINGS = ("utf-8-sig", "gb18030", "big5", "shift_jis", "cp1252")
+
+
+def _decode_csv(raw: bytes) -> str:
+    # BOM 明确的编码优先，避免探测被短样本误导。
+    if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
+        try:
+            return raw.decode("utf-16")
+        except UnicodeDecodeError:
+            pass
+    # 优先用 charset-normalizer 做编码探测；限定候选集，防止把 GBK 误判成
+    # CP949/EUC-JP 等同样能解码但语义错误的编码。未安装时回退常见编码。
+    try:
+        from charset_normalizer import from_bytes
+
+        best = from_bytes(raw, cp_isolation=list(_CSV_ENCODINGS)).best()
+        if best is not None:
+            return str(best)
+    except Exception:
+        pass
+    for encoding in _CSV_ENCODINGS:
+        try:
+            return raw.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("utf-8-sig", errors="replace")
 
 
 def _csv_to_markdown(path: Path) -> tuple[str, dict[str, Any]]:
-    import csv as _csv
-
-    rows: list[list[str]] = []
+    max_text = _max_document_text_bytes()
+    max_rows = _max_table_rows()
+    max_cols = _max_table_columns()
+    max_cells = _max_table_cells()
     try:
         raw = path.read_bytes()
     except OSError as exc:  # pragma: no cover
         raise DocumentError(f"CSV 解析失败: {exc}") from exc
-    text = None
-    for encoding in ("utf-8-sig", "gb18030"):
-        try:
-            text = raw.decode(encoding)
-            break
-        except UnicodeDecodeError:
-            continue
-    if text is None:
-        text = raw.decode("utf-8-sig", errors="replace")
+    text = _decode_csv(raw)
+    rows: list[list[str]] = []
+    cell_count = 0
+    truncated = False
     for record in _csv.reader(io.StringIO(text)):
+        if len(rows) >= max_rows:
+            truncated = True
+            break
+        if len(record) > max_cols:
+            raise DocumentError(f"CSV 列数过多（{len(record)} > {max_cols}）")
         values = [value.replace("|", "\\|").replace("\n", "<br>") for value in record]
         while values and not values[-1]:
             values.pop()
         if any(values):
+            cell_count += len(values)
+            if cell_count > max_cells:
+                raise DocumentError(f"CSV 单元格过多（超过 {max_cells}）")
             rows.append(values)
     if not rows:
         raise DocumentError("CSV 未提取到内容")
@@ -368,7 +538,11 @@ def _csv_to_markdown(path: Path) -> tuple[str, dict[str, Any]]:
         "| " + " | ".join(["---"] * width) + " |",
     ]
     lines.extend("| " + " | ".join(row) + " |" for row in rows[1:])
-    return "\n".join(lines), {"rows": len(rows) - 1}
+    markdown, cut = _truncate_text("\n".join(lines), max_text)
+    meta: dict[str, Any] = {"rows": len(rows) - 1}
+    if truncated or cut:
+        meta["truncated"] = True
+    return markdown, meta
 
 
 def _extract_with_rust(kind: str, path: Path) -> tuple[str, dict[str, Any]] | None:
@@ -450,4 +624,8 @@ def extract_document_file(
     markdown = (markdown or "").strip()
     if not markdown:
         raise DocumentError("文档未提取到文本（可能是扫描件/纯图片，需要 OCR）")
+    markdown, cut = _truncate_text(markdown, _max_document_text_bytes())
+    if cut:
+        meta = dict(meta)
+        meta["truncated"] = True
     return {"kind": kind, "markdown": markdown, **meta}

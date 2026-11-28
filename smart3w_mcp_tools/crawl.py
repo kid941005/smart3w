@@ -35,8 +35,14 @@ def _crawl_site(
     # 队列上限按 max_pages 放大但仍封顶，防止宽站/站群把 URL 与原始 HTML 无界堆积
     queue_limit = max(100, min(5000, max_pages * 10))
     truncated = False
+    deadline = time.monotonic() + srv.MAX_CRAWL_SECONDS
+    deadline_exceeded = False
     while queue and len(results) < max_pages:
         if _cancelled():
+            break
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            deadline_exceeded = True
             break
         url, depth = queue.popleft()
         key = srv.normalize_url(url)
@@ -48,12 +54,13 @@ def _crawl_site(
                 invalid.append(url)
             continue
         visited.add(key)
+        per_fetch_timeout = max(1, min(timeout, int(deadline - time.monotonic())))
         try:
             raw = srv._run_fetch_file(
                 url,
                 mode,
                 False,
-                timeout,
+                per_fetch_timeout,
                 max_length=0,
                 start_index=0,
                 use_cache=True,
@@ -110,9 +117,11 @@ def _crawl_site(
         "unique": len(results),
         "succeeded": succeeded,
         "failed": len(results) - succeeded,
-        "truncated": bool(queue) or truncated,
+        "truncated": bool(queue) or truncated or deadline_exceeded,
         "results": results,
     }
+    if deadline_exceeded:
+        out["deadline_exceeded"] = True
     if _cancelled():
         out["cancelled"] = True
     if invalid:

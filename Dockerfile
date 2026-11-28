@@ -96,4 +96,4 @@ USER smart3w
 CMD ["smart3w-mcp"]
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-    CMD python3 -c "import socket,os; h=os.environ.get('SMART3W_HOST','0.0.0.0'); h='127.0.0.1' if h in ('0.0.0.0','::','') else h; socket.create_connection((h, int(os.environ.get('SMART3W_PORT','50826'))), 3).close()" || exit 1
+    CMD python3 /app/scripts/healthcheck.py || exit 1

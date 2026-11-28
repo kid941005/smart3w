@@ -220,6 +220,23 @@ def test_merge_results_handles_mixed_engine_types():
     assert merged["https://example.com/a"]["engines"] == ["1", "google"]
 
 
+def test_fetch_search_rejects_oversized_response(monkeypatch):
+    class BigResp:
+        def read(self, size=-1):
+            return b"x" * (size if size and size > 0 else 100)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    monkeypatch.setattr(core, "MAX_SEARCH_BYTES", 10)
+    monkeypatch.setattr(core, "_open_search", lambda req, **kwargs: BigResp())
+    with pytest.raises(ValueError, match="大小上限"):
+        core._fetch_search("https://a.example", "q", 5, "", "", "", 0, "")
+
+
 def test_search_web_rejects_bool_safesearch():
     result = core.search_web("q", 5, "https://a.example", safesearch=True)
     assert result["success"] is False

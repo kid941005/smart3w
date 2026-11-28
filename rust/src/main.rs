@@ -1,21 +1,12 @@
 mod html;
+mod limits;
 mod pdf;
 mod sheet;
 
 use std::io::{self, Read, Write};
 
-const DEFAULT_MAX_INPUT_BYTES: usize = 64 * 1024 * 1024;
-
-fn max_input_bytes() -> usize {
-    std::env::var("SMART3W_MAX_DOCUMENT_BYTES")
-        .ok()
-        .and_then(|v| v.trim().parse::<usize>().ok())
-        .filter(|v| *v > 0)
-        .unwrap_or(DEFAULT_MAX_INPUT_BYTES)
-}
-
 fn read_stdin() -> Result<Vec<u8>, String> {
-    let limit = max_input_bytes();
+    let limit = limits::max_input_bytes();
     let mut buf = Vec::new();
     // 多读 1 字节用于判断是否超限，避免把超大文档整体读入内存
     io::stdin()

@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import os
 import subprocess
 import sys
@@ -26,12 +27,19 @@ try:
 except ImportError:  # 延迟到实际抓取时再提示，--check-policy 仍可用
     httpx = None  # type: ignore[assignment]
 
-from smart3w_url_utils import env_flag, host_bypasses_proxy, proxy_url, url_policy_error  # noqa: E402
+from smart3w_url_utils import (  # noqa: E402
+    env_flag,
+    host_bypasses_proxy,
+    is_private_ip,
+    proxy_url,
+    resolve_target_ips,
+    url_policy_error,
+)
 
 try:
     from smart3w_fetch_utils import RobotsChecker  # noqa: E402
 except ImportError:  # pragma: no cover - 极端环境缺少依赖时只关闭 robots 检查
-    RobotsChecker = None  # type: ignore[assignment]
+    RobotsChecker = None  # type: ignore[assignment,misc]
 
 DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -112,6 +120,60 @@ def _proxy_for(url: str) -> str | None:
     if host_bypasses_proxy(host):
         return None
     return _httpx_proxy_url() or _env_proxy_url(url)
+
+
+def _pinned_ip_for(url: str) -> str | None:
+    """返回应固定的目标 IP；代理模式、IP 字面量或关闭固定时返回 None。
+
+    固定 DNS 结果可消除“策略校验解析到公网、实际连接又被重解析到内网”的
+    rebinding 窗口。代价是多 IP 站点只尝试首个公网 IP。
+    """
+    if not env_flag("SMART3W_DNS_PIN", True):
+        return None
+    if _proxy_for(url):
+        # 代理自行解析目标域名，本地固定没有意义
+        return None
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        host = (parsed.hostname or "").strip().strip("[]")
+    except ValueError:
+        return None
+    if not host:
+        return None
+    try:
+        ipaddress.ip_address(host)
+        return None
+    except ValueError:
+        pass
+    candidates = [ip for ip in resolve_target_ips(host) if not is_private_ip(ip)]
+    return candidates[0] if candidates else None
+
+
+class _PinnedBackend:
+    """httpcore 网络后端：把指定主机的 TCP 连接固定到一个已知公网 IP。
+
+    TLS 的 SNI/证书校验仍使用 httpcore 传入的原始主机名，因此证书语义不变。
+    """
+
+    def __init__(self, mapping: dict[str, str]) -> None:
+        self._mapping = mapping
+
+    def connect_tcp(self, host, port, timeout=None, local_address=None, socket_options=None):
+        from httpcore._backends.sync import SyncBackend
+
+        return SyncBackend().connect_tcp(
+            self._mapping.get(host, host), port, timeout, local_address, socket_options
+        )
+
+    def connect_unix_socket(self, path, timeout=None, socket_options=None):
+        from httpcore._backends.sync import SyncBackend
+
+        return SyncBackend().connect_unix_socket(path, timeout, socket_options)
+
+    def sleep(self, seconds: float) -> None:
+        import time
+
+        time.sleep(seconds)
 
 
 def _write_effective(path: str | None, url: str) -> None:
@@ -227,6 +289,13 @@ def _fetch_with_curl(
         proxy = _proxy_for(current)
         if proxy:
             cmd.extend(["--proxy", proxy])
+        pinned_ip = _pinned_ip_for(current)
+        if pinned_ip:
+            parsed = urllib.parse.urlsplit(current)
+            host = (parsed.hostname or "").strip().strip("[]")
+            port = parsed.port or (443 if parsed.scheme == "https" else 80)
+            address = f"[{pinned_ip}]" if ":" in pinned_ip else pinned_ip
+            cmd.extend(["--resolve", f"{host}:{port}:{address}"])
         if not env_flag("SMART3W_SSL_VERIFY", True):
             cmd.append("-k")
         if validate_only:
@@ -271,6 +340,13 @@ def _fetch_with_curl(
             _write_effective(effective_url_path, current)
             return ""
         assert part_path is not None
+        try:
+            downloaded = os.path.getsize(part_path)
+        except OSError:
+            downloaded = 0
+        if downloaded > max_bytes:
+            Path(part_path).unlink(missing_ok=True)
+            raise DownloadTooLarge(f"响应体超过下载上限 {max_bytes} 字节")
         os.replace(part_path, part_path[: -len(".part")])
         _write_effective(effective_url_path, current)
         return headers.get("content-type", "")
@@ -354,14 +430,34 @@ def _fetch_with_httpx(
 
         # 每跳单独建客户端：重定向可能改变 host，NO_PROXY/代理选择要随之变化；
         # trust_env=False 避免 httpx 解析 NO_PROXY 中的 [::1] 时报 Invalid port。
-        with httpx.Client(
-            follow_redirects=False,
-            timeout=httpx.Timeout(timeout, connect=min(timeout, 10)),
-            proxy=_proxy_for(current),
-            trust_env=False,
-            verify=env_flag("SMART3W_SSL_VERIFY", True),
-            headers=headers,
-        ) as client:
+        pinned_ip = _pinned_ip_for(current)
+        timeout_obj = httpx.Timeout(timeout, connect=min(timeout, 10))
+        if pinned_ip:
+            parsed = urllib.parse.urlsplit(current)
+            host = (parsed.hostname or "").strip().strip("[]")
+            transport = httpx.HTTPTransport(
+                verify=env_flag("SMART3W_SSL_VERIFY", True), trust_env=False
+            )
+            transport._pool._network_backend = _PinnedBackend(  # type: ignore[assignment]
+                {host: pinned_ip}
+            )
+            client = httpx.Client(
+                follow_redirects=False,
+                timeout=timeout_obj,
+                trust_env=False,
+                transport=transport,
+                headers=headers,
+            )
+        else:
+            client = httpx.Client(
+                follow_redirects=False,
+                timeout=timeout_obj,
+                proxy=_proxy_for(current),
+                trust_env=False,
+                verify=env_flag("SMART3W_SSL_VERIFY", True),
+                headers=headers,
+            )
+        with client:
             with client.stream("GET", current) as response:
                 if response.is_redirect:
                     location = response.headers.get("location")

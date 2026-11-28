@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - master
+      - main
+
+jobs:
+  python-tests:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install uv
+        run: pip install uv
+      - name: Verify lockfile
+        run: uv lock --check
+      - name: Sync dependencies
+        run: uv sync --frozen --extra dev
+      - name: Lint
+        run: uv run ruff check .
+      - name: Type check
+        run: uv run mypy
+      - name: Unit tests
+        run: uv run pytest -q
+      - name: Build distributions
+        if: matrix.python-version == '3.12'
+        run: uv build
+      - name: Verify distribution contents
+        if: matrix.python-version == '3.12'
+        run: |
+          python - <<'PY'
+          import glob, tarfile, zipfile
+          sdist = glob.glob("dist/*.tar.gz")
+          wheel = glob.glob("dist/*.whl")
+          assert sdist, "sdist missing"
+          assert wheel, "wheel missing"
+          with tarfile.open(sdist[0]) as tf:
+              names = tf.getnames()
+              assert any(name.endswith("/uv.lock") for name in names), "uv.lock missing from sdist"
+          with zipfile.ZipFile(wheel[0]) as zf:
+              names = zf.namelist()
+              assert "scripts/healthcheck.py" in names, "healthcheck.py missing from wheel"
+          print("distribution contents OK")
+          PY
+
+  rust-sidecar:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Rust sidecar
+        run: cargo build --release --locked --manifest-path rust/Cargo.toml
+      - name: Test Rust sidecar
+        run: cargo test --release --locked --manifest-path rust/Cargo.toml

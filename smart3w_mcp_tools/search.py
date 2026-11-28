@@ -1,4 +1,6 @@
 # 由 mcp_server.py 拆分出的 MCP 工具实现；通过 srv 动态访问 mcp_server 的全局对象，保持可测性。
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 from smart3w_mcp_tools._server import srv
 
 
@@ -7,15 +9,15 @@ def _attach_search_content(
     read_top: int,
     content_max_chars: int,
 ) -> dict:
-    """给搜索结果前 read_top 条补充正文；单条抓取失败不影响整体搜索。"""
+    """给搜索结果前 read_top 条补充正文；并行抓取，单条失败不影响整体搜索。"""
     results = data.get("results") or []
     enriched: list[dict] = []
-    succeeded = 0
+    fetch_jobs: list[tuple[int, dict, str]] = []
     failed = 0
     for index, item in enumerate(results):
         row = dict(item) if isinstance(item, dict) else {"title": "", "url": "", "snippet": ""}
+        enriched.append(row)
         if index >= read_top:
-            enriched.append(row)
             continue
         url = row.get("url")
         if not isinstance(url, str) or srv._validate_http_url(url):
@@ -28,40 +30,56 @@ def _attach_search_content(
                 }
             )
             failed += 1
-            enriched.append(row)
             continue
-        fetched = srv._run_fetch_file(
-            url,
-            "get",
-            True,
-            20,
-            content_max_chars,
-            0,
-            use_cache=True,
-            respect_robots=None,
-        )
-        if fetched.get("success"):
-            row.update(
-                {
-                    "content": fetched.get("content", ""),
-                    "content_truncated": bool(fetched.get("truncated")),
-                    "content_total_length": fetched.get("total_length", 0),
-                }
-            )
-            if fetched.get("effective_url"):
-                row["effective_url"] = fetched["effective_url"]
-            succeeded += 1
-        else:
-            row.update(
-                {
-                    "content": "",
-                    "content_truncated": False,
-                    "read_error": fetched.get("error") or "正文抓取失败",
-                    "read_error_code": fetched.get("error_code", "FETCH_FAILED"),
-                }
-            )
-            failed += 1
-        enriched.append(row)
+        fetch_jobs.append((index, row, url))
+
+    succeeded = 0
+    if fetch_jobs:
+        with ThreadPoolExecutor(max_workers=min(3, len(fetch_jobs))) as executor:
+            futures = {
+                executor.submit(
+                    srv._run_fetch_file,
+                    url,
+                    "get",
+                    True,
+                    20,
+                    content_max_chars,
+                    0,
+                    use_cache=True,
+                    respect_robots=True,
+                ): (index, row)
+                for index, row, url in fetch_jobs
+            }
+            for future in as_completed(futures):
+                index, row = futures[future]
+                try:
+                    fetched = future.result()
+                except Exception as exc:  # noqa: BLE001 - 单条失败不能影响整体搜索
+                    fetched = {"success": False, "error": str(exc), "error_code": "FETCH_FAILED"}
+                if fetched.get("success"):
+                    row.update(
+                        {
+                            "content": fetched.get("content", ""),
+                            "content_truncated": bool(
+                                fetched.get("truncated") or fetched.get("content_truncated")
+                            ),
+                            "content_total_length": fetched.get("total_length", 0),
+                        }
+                    )
+                    if fetched.get("effective_url"):
+                        row["effective_url"] = fetched["effective_url"]
+                    succeeded += 1
+                else:
+                    row.update(
+                        {
+                            "content": "",
+                            "content_truncated": False,
+                            "read_error": fetched.get("error") or "正文抓取失败",
+                            "read_error_code": fetched.get("error_code", "FETCH_FAILED"),
+                        }
+                    )
+                    failed += 1
+
     out = dict(data)
     out["results"] = enriched
     out["read_top"] = read_top

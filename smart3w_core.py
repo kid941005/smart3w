@@ -34,6 +34,7 @@ SITEMAP_TOTAL_TIMEOUT = 120
 SEARXNG_MAX_PAGES = 10
 SEARXNG_PAGE_SIZE = 10
 SEARCH_TOTAL_TIMEOUT = 120
+MAX_SEARCH_BYTES = 10 * 1024 * 1024
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
 SEARCH_TIME_RANGES = ("", "day", "week", "month", "year")
@@ -528,7 +529,13 @@ def _fetch_search(instance, query, count, language, time_range, categories, safe
         headers={"User-Agent": USER_AGENT, "Accept": "application/json"},
     )
     with _open_search(req) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+        try:
+            body = resp.read(MAX_SEARCH_BYTES + 1)
+        except TypeError:  # 兼容只支持无参 read 的假响应/旧实现
+            body = resp.read()
+        if len(body) > MAX_SEARCH_BYTES:
+            raise ValueError(f"搜索响应超过大小上限 {MAX_SEARCH_BYTES} 字节")
+        return json.loads(body.decode("utf-8"))
 
 
 def _as_engine_list(value):

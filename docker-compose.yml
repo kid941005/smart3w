@@ -59,7 +59,7 @@ services:
       - ./smart3w_data:/data/jobs
     healthcheck:
       # SMART3W_HOST=0.0.0.0/:: 时本机回环探测 127.0.0.1；绑定具体地址时探测该地址
-      test: ["CMD", "python3", "-c", "import socket,os; h=os.environ.get('SMART3W_HOST','0.0.0.0'); h='127.0.0.1' if h in ('0.0.0.0','::','') else h; socket.create_connection((h, int(os.environ.get('SMART3W_PORT','50826'))), 3).close()"]
+      test: ["CMD", "python3", "/app/scripts/healthcheck.py"]
       interval: 30s
       timeout: 5s
       start_period: 15s

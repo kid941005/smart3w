@@ -131,8 +131,14 @@ DEFAULT_HOST = (os.environ.get("SMART3W_HOST") or "0.0.0.0").strip() or "0.0.0.0
 MAX_CACHE_CONTENT_BYTES = 2_000_000
 # 单次抓取的墙钟上限：即使 smart 模式内部按策略放大，也不能超过 MCP 客户端超时
 MAX_FETCH_SECONDS = max(10, _env_int("SMART3W_MAX_FETCH_SECONDS", 110))
+# 递归 crawl 的整体墙钟预算，避免宽站/慢站把一次 MCP 调用拖到客户端超时
+MAX_CRAWL_SECONDS = max(10, _env_int("SMART3W_MAX_CRAWL_SECONDS", 110))
 # 子进程 stdout/stderr 保留上限，避免异常页面把日志无限读入内存
 MAX_SUBPROCESS_OUTPUT_BYTES = max(65536, _env_int("SMART3W_MAX_SUBPROCESS_OUTPUT_BYTES", 4 * 1024 * 1024))
+# 单次抓取正文读取上限：fetch.sh 写出的文件可能远大于 max_length，先限制读入内存的字节数
+MAX_FETCH_OUTPUT_BYTES = max(1_000_000, _env_int("SMART3W_MAX_FETCH_OUTPUT_BYTES", 8 * 1024 * 1024))
+# 任务持久化单条结果上限：完整结果仍保留在内存，落盘时截断避免 jobs.json 无限膨胀
+JOB_RESULT_MAX_BYTES = max(262144, _env_int("SMART3W_JOB_RESULT_MAX_BYTES", 4 * 1024 * 1024))
 
 # 抓取治理：URL 去重缓存 / robots / 按域名限速
 # max_age_seconds 允许到 7 天，缓存本身必须能存活 7 天，否则文档承诺失效
@@ -162,6 +168,19 @@ class FetchCancelledError(FetchError):
     """后台任务取消导致抓取中止。"""
 
     error_code = "FETCH_CANCELLED"
+
+
+def _read_text_capped(path: Path, limit: int) -> tuple[str, bool]:
+    """读取文本文件，最多读取 limit 字节；返回内容与是否被截断。"""
+    try:
+        size = path.stat().st_size
+    except OSError:
+        size = 0
+    if size <= limit:
+        return path.read_text(encoding="utf-8", errors="replace"), False
+    with path.open("rb") as handle:
+        raw = handle.read(limit)
+    return raw.decode("utf-8", errors="replace"), True
 
 
 def _is_int(value: object) -> bool:
@@ -434,7 +453,7 @@ def _do_fetch_file(
             # 对外报告用户设置的超时，而不是内部放大的子进程超时
             raise FetchTimeoutError(f"抓取超时（>{timeout}s）") from exc
         try:
-            content = Path(out_path).read_text(encoding="utf-8", errors="replace")
+            content, content_truncated = _read_text_capped(Path(out_path), MAX_FETCH_OUTPUT_BYTES)
         except OSError as exc:
             raise FetchError(f"fetch.sh 未生成输出文件: {exc}") from exc
 
@@ -463,6 +482,7 @@ def _do_fetch_file(
             "mode": mode,
             "method": method,
             "content": content,
+            "content_truncated": content_truncated,
             "log": log.strip(),
         }
         if effective_url:
@@ -636,7 +656,39 @@ class JobLimitError(RuntimeError):
     """后台任务数量达到上限；调用方应提示稍后重试。"""
 
 
-def _job_view(job: dict) -> dict:
+def _job_result_for_persist(result: object) -> object:
+    """落盘前截断过大的任务结果；内存中的完整结果不受影响。"""
+    if result is None:
+        return None
+    try:
+        encoded = json.dumps(result, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return {"result_truncated": True, "note": "结果无法序列化"}
+    if len(encoded.encode("utf-8", errors="replace")) <= JOB_RESULT_MAX_BYTES:
+        return result
+    if isinstance(result, dict):
+        clone = dict(result)
+        clone.pop("log", None)
+        content = clone.get("content")
+        if isinstance(content, str):
+            clone["content"] = content[:200_000]
+            clone["content_truncated"] = True
+        clone["result_truncated"] = True
+        try:
+            if len(json.dumps(clone, ensure_ascii=False).encode("utf-8", errors="replace")) <= JOB_RESULT_MAX_BYTES:
+                return clone
+        except (TypeError, ValueError):
+            pass
+        return {
+            "result_truncated": True,
+            "success": result.get("success"),
+            "url": result.get("url"),
+            "note": "任务结果过大，完整结果仅在内存中；重启后不可恢复",
+        }
+    return {"result_truncated": True, "note": "任务结果过大"}
+
+
+def _job_view(job: dict, *, persist: bool = False) -> dict:
     """返回可序列化的任务快照，不暴露内部锁/线程对象。"""
     return {
         "job_id": job["job_id"],
@@ -645,7 +697,7 @@ def _job_view(job: dict) -> dict:
         "started_at": job.get("started_at"),
         "finished_at": job.get("finished_at"),
         "cancel_requested": bool(job.get("cancel_requested")),
-        "result": job.get("result"),
+        "result": _job_result_for_persist(job.get("result")) if persist else job.get("result"),
         "error": job.get("error"),
     }
 
@@ -657,7 +709,7 @@ def _persist_jobs_locked() -> None:
     cancel_event 等运行期对象不会写入文件。
     """
     try:
-        payload = {"version": 1, "jobs": [_job_view(job) for job in JOBS.values()]}
+        payload = {"version": 1, "jobs": [_job_view(job, persist=True) for job in JOBS.values()]}
         JOB_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp_path = tempfile.mkstemp(
             dir=str(JOB_STATE_PATH.parent), prefix=".jobs-", suffix=".tmp"
@@ -749,8 +801,15 @@ def _run_job(job: dict, target, *args, **kwargs) -> None:
         _persist_jobs_locked()
     try:
         result = target(*args, **kwargs)
+        failed = isinstance(result, dict) and result.get("success") is False
         with JOBS_LOCK:
-            job["status"] = "cancelled" if job.get("cancel_requested") else "completed"
+            if job.get("cancel_requested"):
+                job["status"] = "cancelled"
+            elif failed:
+                job["status"] = "failed"
+                job["error"] = str(result.get("error") or "任务返回失败") if isinstance(result, dict) else "任务返回失败"
+            else:
+                job["status"] = "completed"
             job["result"] = result
             job["finished_at"] = time.time()
             _persist_jobs_locked()

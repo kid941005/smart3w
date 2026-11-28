@@ -157,8 +157,61 @@ def test_empty_pdf_reports_ocr_hint(tmp_path):
         extract_document_file(path)
 
 
+def test_pdf_any_page_error_falls_back_to_pdfplumber(tmp_path, monkeypatch):
+    import smart3w_document
+
+    path = tmp_path / "partial.pdf"
+    path.write_bytes(b"%PDF-1.4 fake")
+
+    class BadPage:
+        def extract_text(self):
+            raise ValueError("broken page")
+
+    class FakeReader:
+        is_encrypted = False
+        pages = [BadPage()]
+
+    class GoodPage:
+        def extract_text(self):
+            return "pdfplumber fallback text"
+
+    class FakePdf:
+        pages = [GoodPage()]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    import pdfplumber
+    import pypdf
+
+    monkeypatch.setattr(smart3w_document, "_extract_with_rust", lambda kind, source: None)
+    monkeypatch.setattr(pypdf, "PdfReader", lambda _path: FakeReader())
+    monkeypatch.setattr(pdfplumber, "open", lambda _path: FakePdf())
+
+    result = extract_document_file(path)
+    assert result["kind"] == "pdf"
+    assert "pdfplumber fallback text" in result["markdown"]
+
+
 def test_detect_kind_does_not_treat_html_as_document(tmp_path):
     path = tmp_path / "article"
     path.write_bytes(b"<!doctype html>\n<html><body>hi</body></html>")
     assert detect_kind(path, content_type="application/pdf") is None
     assert detect_kind(path, url="https://example.com/article.pdf") is None
+
+
+def test_xlsx_sparse_dimension_limit_rejects(tmp_path):
+    import openpyxl
+
+    path = tmp_path / "sparse.xlsx"
+    workbook = openpyxl.Workbook()
+    sheet = workbook.active
+    sheet.cell(row=1, column=1, value="x")
+    sheet.cell(row=1_048_576, column=16_384, value="y")
+    workbook.save(str(path))
+
+    with pytest.raises(DocumentError, match="工作表过大|行数|列数|单元格"):
+        extract_document_file(path)

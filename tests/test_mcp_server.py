@@ -607,6 +607,29 @@ def test_crawl_rejects_invalid_max_depth(monkeypatch):
     assert result["error_code"] == "INVALID_ARGUMENT"
 
 
+def test_crawl_site_deadline_marks_truncated(monkeypatch):
+    monkeypatch.setattr(mcp_server, "_validate_http_url", lambda url: None)
+    monkeypatch.setattr(mcp_server, "_compress_html_text", lambda html: html)
+    monkeypatch.setattr(mcp_server, "MAX_CRAWL_SECONDS", 0.05)
+
+    def slow_fetch(url, *args, **kwargs):
+        time.sleep(0.2)
+        return {
+            "success": True,
+            "content": '<a href="/next">n</a>',
+            "effective_url": url,
+        }
+
+    monkeypatch.setattr(mcp_server, "_run_fetch_file", slow_fetch)
+    result = mcp_server.smart3w_crawl(
+        seed_url="https://example.com/", max_depth=1, max_pages=10, compress=False
+    )
+
+    assert result["truncated"] is True
+    assert result.get("deadline_exceeded") is True
+    assert len(result["results"]) == 1
+
+
 def test_extract_css_fields(monkeypatch):
     monkeypatch.setattr(mcp_server, "_validate_http_url", lambda url: None)
     monkeypatch.setattr(

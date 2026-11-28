@@ -55,3 +55,28 @@ def test_new_job_is_persisted(tmp_path, monkeypatch):
     assert job["status"] == "queued"
     raw = json.loads((tmp_path / "jobs.json").read_text(encoding="utf-8"))
     assert raw["jobs"][0]["job_id"] == job["job_id"]
+
+
+def test_run_job_marks_failed_when_result_unsuccessful(tmp_path, monkeypatch):
+    _reset_jobs(tmp_path, monkeypatch)
+    job = mcp_server._new_job()
+    mcp_server._run_job(job, lambda: {"success": False, "error": "boom"})
+
+    assert job["status"] == "failed"
+    assert job["error"] == "boom"
+    assert job["result"]["success"] is False
+
+
+def test_persisted_job_result_is_truncated(tmp_path, monkeypatch):
+    _reset_jobs(tmp_path, monkeypatch)
+    monkeypatch.setattr(mcp_server, "JOB_RESULT_MAX_BYTES", 300_000)
+    job = mcp_server._new_job()
+    mcp_server._run_job(
+        job, lambda: {"success": True, "content": "x" * 400_000, "log": "y" * 1000}
+    )
+
+    raw = json.loads((tmp_path / "jobs.json").read_text(encoding="utf-8"))
+    persisted = raw["jobs"][0]["result"]
+    assert persisted["result_truncated"] is True
+    assert len(persisted["content"]) <= 200_000
+    assert "log" not in persisted

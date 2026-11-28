@@ -14,12 +14,14 @@ import json
 import os
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Any, cast
 
 _DEFAULT_TIMEOUT = 90.0
 _DEFAULT_MAX_BYTES = 64 * 1024 * 1024
 _BINARY_CACHE: dict[str, str | None] = {}
+_AVAILABLE_CACHE: dict[str, bool] = {}
 
 
 def _max_bytes() -> int:
@@ -86,7 +88,12 @@ def binary_path() -> str | None:
 
 
 def available() -> bool:
-    return binary_path() is not None
+    exe = binary_path()
+    if not exe:
+        return False
+    if exe not in _AVAILABLE_CACHE:
+        _AVAILABLE_CACHE[exe] = _invoke("doctor", b"") is not None
+    return _AVAILABLE_CACHE[exe]
 
 
 def _invoke(command: str, payload: bytes, timeout: float = _DEFAULT_TIMEOUT) -> dict | None:
@@ -96,22 +103,27 @@ def _invoke(command: str, payload: bytes, timeout: float = _DEFAULT_TIMEOUT) -> 
     limit = _max_bytes()
     if len(payload) > limit:
         return None
+    # 输出先落到临时文件再按上限读取，避免超限 stdout 整体缓冲进程内存
     try:
-        proc = subprocess.run(
-            [exe, command],
-            input=payload,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=timeout,
-        )
+        with tempfile.TemporaryFile() as out:
+            proc = subprocess.run(
+                [exe, command],
+                input=payload,
+                stdout=out,
+                stderr=subprocess.PIPE,
+                timeout=timeout,
+            )
+            if proc.returncode != 0:
+                return None
+            size = out.tell()
+            if size > limit:
+                return None
+            out.seek(0)
+            raw = out.read(limit + 1)
     except (OSError, subprocess.SubprocessError):
         return None
-    if proc.returncode != 0:
-        return None
-    if len(proc.stdout) > limit:
-        return None
     try:
-        data = json.loads(proc.stdout.decode("utf-8", "replace"))
+        data = json.loads(raw.decode("utf-8", "replace"))
     except ValueError:
         return None
     if not isinstance(data, dict) or not data.get("ok"):
@@ -171,4 +183,9 @@ def doctor() -> dict:
     if not exe:
         return {"available": False, "path": None, "mode": _mode()}
     payload = _invoke("doctor", b"")
-    return {"available": True, "path": exe, "mode": _mode(), "info": payload}
+    return {
+        "available": payload is not None,
+        "path": exe,
+        "mode": _mode(),
+        "info": payload,
+    }

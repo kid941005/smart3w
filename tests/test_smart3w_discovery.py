@@ -18,6 +18,9 @@ def test_same_site_allows_subdomains_by_default():
     assert same_site("https://a.example.com/x", "https://example.com/") is True
     assert same_site("https://other.com/x", "https://example.com/") is False
     assert same_site("https://a.example.com/x", "https://example.com/", include_subdomains=False) is False
+    # 端口不同不能视为同站，避免横向探测同主机其他服务
+    assert same_site("http://example.com:8080/x", "http://example.com/") is False
+    assert same_site("https://example.com:443/x", "https://example.com/") is True
 
 
 def test_path_allowed_supports_prefix_and_glob():

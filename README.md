@@ -2,7 +2,7 @@
 
 [![OpenClaw](https://img.shields.io/badge/OpenClaw-Compatible-green)](https://github.com/openclaw/openclaw)
 [![MIT](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
-[![Version](https://img.shields.io/badge/Version-2.11.1-blue)](https://github.com/kid941005/smart3w/releases)
+[![Version](https://img.shields.io/badge/Version-2.11.2-blue)](https://github.com/kid941005/smart3w/releases)
 
 集 **SearXNG 网页搜索**、**Sitemap 解析** 与 **智能网页抓取** 于一体。
 
@@ -478,7 +478,7 @@ SMART3W_HOST=127.0.0.1 SMART3W_PORT=50999 docker compose up -d
 
 ```dotenv
 # .env
-SMART3W_IMAGE_TAG=v2.11.1
+SMART3W_IMAGE_TAG=v2.11.2
 SMART3W_HOST=127.0.0.1
 SMART3W_PORT=50999
 ```
@@ -492,8 +492,8 @@ docker compose up -d
 `docker-compose.yml` 的镜像 tag 支持 `SMART3W_IMAGE_TAG`，默认 `latest`；生产环境建议固定版本，避免自动拉到不兼容的新版本：
 
 ```bash
-SMART3W_IMAGE_TAG=v2.11.1 docker compose pull
-SMART3W_IMAGE_TAG=v2.11.1 docker compose up -d
+SMART3W_IMAGE_TAG=v2.11.2 docker compose pull
+SMART3W_IMAGE_TAG=v2.11.2 docker compose up -d
 ```
 
 > **安全说明**：MCP 服务默认监听 `0.0.0.0:50826` 且无内置鉴权，部署到公网时请务必放在带认证/限流的
@@ -604,7 +604,7 @@ smart3w/
 ├── smart3w_rust.py         # Rust 后端桥接（子进程 + JSON 信封，失败回退纯 Python）
 ├── rust/                   # Rust sidecar 源码（HTML→Markdown / PDF / XLSX / CSV）
 ├── .github/workflows/      # CI（lint + 测试 + 打包）与 Docker 发布
-├── tests/                  # 单元测试（pytest，213 例）
+├── tests/                  # 单元测试（pytest，250 例）
 └── scripts/
     ├── fetch.sh            # 统一入口脚本（搜索 / 抓取 / Sitemap）
     ├── document_extract.py # 文档解析 CLI（PDF / Office → Markdown）
@@ -647,8 +647,7 @@ uv run ruff check .
 uv build
 ```
 
-CI 会在 Python 3.10 / 3.12 上运行 lint、单元测试，并校验 wheel 中是否包含
-`scripts/fetch.sh` 与 `scripts/smart3w_utils.py`。
+CI 会在 Python 3.10 / 3.11 / 3.12 上运行 lint、单元测试与 Rust sidecar 测试，并校验 wheel/sdist 内容与 tag/版本一致性。
 
 版本号唯一来源为 `smart3w_version.py`；`pyproject.toml` 使用 setuptools 动态版本读取该模块，README badge、SKILL.md 与 User-Agent 由 `tests/test_version.py` 校验一致性。
 
@@ -662,6 +661,16 @@ CI 会在 Python 3.10 / 3.12 上运行 lint、单元测试，并校验 wheel 中
 ---
 
 ## 📝 更新日志
+
+### 2.11.2
+
+- **安全（浏览器抓取 SSRF/WebSocket）**：`scrapling_extract.py` 在浏览器导航前安装 Playwright `page.route`，`smart3w_interact.py` 同时拦截 HTTP(S)、WebSocket 与非 http(s) 协议（仅放行 `data/blob/about`）；初始 URL 先过 URL 策略，阻断重定向/页面内请求跳到内网。
+- **安全（文档解压炸弹）**：ZIP 条目数与解压总量检查提前到 `namelist()` 之前；PDF/XLSX/CSV/PPTX 增加输出文本、行列、单元格上限（`SMART3W_MAX_DOCUMENT_TEXT_BYTES` 默认 10MB 等），Rust sidecar 与 Python 回退保持一致。
+- **安全（DNS rebinding）**：Python HTTP 与 curl 抓取默认固定首次解析到的公网 IP（`SMART3W_DNS_PIN=0` 可关闭），并在 curl 下载完成后再次校验文件大小；代理模式按设计跳过本地 DNS。
+- **修复（Rust sidecar）**：升级 `pdf-extract 0.12` / `calamine 0.38` / `lopdf 0.42+`，PDF 不再二次全量解析；XLSX 读取 `<dimension>` 预检稀疏超大表；Excel 日期输出统一为 `YYYY-MM-DD HH:MM:SS`；HTML 快路径提升懒加载图片 `data-src`；`smart3w_rust.doctor()` 改为真实执行探测。
+- **修复（参数与任务）**：`smart3w_search` 的 `read_top` 改为并行抓取并默认遵守 robots；`smart3w_crawl` 增加总 deadline（`SMART3W_MAX_CRAWL_SECONDS`）；后台任务按结果 `success` 标记完成/失败，落盘结果过大时截断；curl 引擎补硬字节上限。
+- **修复（其他）**：CSV 编码探测限定候选集并支持 Big5/Shift-JIS/CP1252/UTF-16；`same_site` 比较端口；`fetch.sh` 用 ZIP 内容识别 OOXML；健康检查统一端口归一化；发布 workflow 改为先 load+smoke 再 push，并校验 tag 与版本一致；新增 PR CI（3.10/3.11/3.12 + Rust 测试）。
+- **测试**：新增文档上限、稀疏 XLSX、Big5 CSV、DNS pin、crawl deadline、任务持久化、Rust 单元测试等，共 250 例 Python 测试 + 3 例 Rust 测试通过。
 
 ### 2.11.1
 

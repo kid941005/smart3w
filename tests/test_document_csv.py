@@ -49,3 +49,29 @@ def test_extract_gbk_csv_document(tmp_path):
     assert result["kind"] == "csv"
     assert "| 名称 | 数量 |" in result["markdown"]
     assert "| 苹果 | 3 |" in result["markdown"]
+
+
+def test_extract_big5_csv_document(tmp_path):
+    path = tmp_path / "big5.csv"
+    path.write_bytes("名稱,數量\n蘋果,3\n".encode("big5"))
+    result = extract_document_file(path)
+    assert result["kind"] == "csv"
+    assert "名稱" in result["markdown"]
+    assert "蘋果" in result["markdown"]
+
+
+def test_csv_column_limit_rejects_wide_table(tmp_path):
+    path = tmp_path / "wide.csv"
+    header = ",".join(f"c{i}" for i in range(10001))
+    path.write_text(header + "\n", encoding="utf-8")
+    with pytest.raises(DocumentError, match="列数"):
+        extract_document_file(path)
+
+
+def test_csv_output_truncates_at_text_limit(tmp_path, monkeypatch):
+    monkeypatch.setenv("SMART3W_MAX_DOCUMENT_TEXT_BYTES", "20")
+    path = tmp_path / "long.csv"
+    path.write_text("name,value\nalpha," + "x" * 200 + "\n", encoding="utf-8")
+    result = extract_document_file(path)
+    assert result["truncated"] is True
+    assert len(result["markdown"].encode("utf-8")) <= 20

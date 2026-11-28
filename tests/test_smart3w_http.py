@@ -137,3 +137,39 @@ def test_proxy_for_honors_no_proxy_with_ipv6_brackets(monkeypatch):
     assert smart3w_http._proxy_for("http://[::1]:8080/") is None
     assert smart3w_http._proxy_for("https://example.com/") is None
     assert smart3w_http._proxy_for("https://other.test/") == "http://127.0.0.1:7890"
+
+
+def test_pinned_ip_prefers_public_resolution(monkeypatch):
+    monkeypatch.delenv("SMART3W_PROXY_URL", raising=False)
+    monkeypatch.delenv("HTTP_PROXY", raising=False)
+    monkeypatch.delenv("HTTPS_PROXY", raising=False)
+    monkeypatch.delenv("ALL_PROXY", raising=False)
+    monkeypatch.setenv("SMART3W_DNS_PIN", "1")
+    monkeypatch.setattr(
+        smart3w_http, "resolve_target_ips", lambda host: ["10.0.0.1", "93.184.216.34"]
+    )
+
+    assert smart3w_http._pinned_ip_for("https://example.com/a") == "93.184.216.34"
+
+
+def test_pinned_ip_skips_private_only_and_ip_literals(monkeypatch):
+    monkeypatch.delenv("SMART3W_PROXY_URL", raising=False)
+    monkeypatch.delenv("HTTP_PROXY", raising=False)
+    monkeypatch.delenv("HTTPS_PROXY", raising=False)
+    monkeypatch.delenv("ALL_PROXY", raising=False)
+    monkeypatch.setenv("SMART3W_DNS_PIN", "1")
+    monkeypatch.setattr(smart3w_http, "resolve_target_ips", lambda host: ["127.0.0.1"])
+
+    assert smart3w_http._pinned_ip_for("https://internal.test/") is None
+    assert smart3w_http._pinned_ip_for("https://93.184.216.34/") is None
+
+
+def test_pinned_ip_disabled_by_env(monkeypatch):
+    monkeypatch.delenv("SMART3W_PROXY_URL", raising=False)
+    monkeypatch.delenv("HTTP_PROXY", raising=False)
+    monkeypatch.delenv("HTTPS_PROXY", raising=False)
+    monkeypatch.delenv("ALL_PROXY", raising=False)
+    monkeypatch.setenv("SMART3W_DNS_PIN", "0")
+    monkeypatch.setattr(smart3w_http, "resolve_target_ips", lambda host: ["93.184.216.34"])
+
+    assert smart3w_http._pinned_ip_for("https://example.com/") is None

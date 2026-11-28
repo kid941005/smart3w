@@ -1,7 +1,7 @@
 ---
 name: smart3w
 description: 智能网页抓取路由 + SearXNG 搜索，支持 PDF/Office 文档解析、搜索即读、站点地图发现、递归抓取、CSS/XPath 结构化抽取与真实浏览器交互（点击/登录/翻页）。支持 4 种明确语义的抓取方式：get 使用 Python HTTP（逐跳 SSRF/robots，失败回退 curl），fetch 使用内置 scrapling 包装器（DynamicFetcher + --real-chrome），stealthy 使用内置 scrapling 包装器（StealthyFetcher + --real-chrome），抓取后都会复检最终 URL，smart 按 Python HTTP → curl → fetch → stealthy 自动降级。支持并发批量抓取、URL 去重缓存、robots.txt 检查与按域名限速；搜索支持多 SearXNG 实例故障转移与语言/时间/分类/安全搜索/引擎参数。默认输出尽量为 Markdown：普通网页提取正文并尽量保留图片为 Markdown 图片链接，微信文章按正文段落输出并保留插图。
-version: 2.11.1
+version: 2.11.2
 license: MIT
 ---
 
@@ -61,7 +61,7 @@ HTML→Markdown 抽取（普通网页 / 微信）、PDF 文本抽取、XLSX/CSV 
   - `doctor()` → `{available, path, mode, info?}`
 - 集成路径（正常使用无需直接调用二进制）：
   - `smart3w_core.compress_html()` / `compress_wechat()` 先试 Rust，失败回退 readability-lxml / BeautifulSoup；
-  - `smart3w_document.extract_document_file()` 对 `.pdf` / `.xlsx|.xls` / `.csv` 先试 Rust，失败回退 Python；
+  - `smart3w_document.extract_document_file()` 对 `.pdf` / `.xlsx` / `.csv` 先试 Rust，失败回退 Python；旧版 `.xls` 不再尝试解析（明确报错），请先另存为 `.xlsx`；
   - `smart3w_fetch`、`smart3w_search(read_top)`、`smart3w_crawl` 的正文压缩与文档解析自动受益。
 - 二进制 CLI（调试用，stdin 读原始字节，stdout 输出 JSON 信封）：
 

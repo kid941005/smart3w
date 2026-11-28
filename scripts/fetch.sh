@@ -518,8 +518,20 @@ _maybe_document() {
     if head -c 4 "$path" 2>/dev/null | grep -q '%PDF'; then
         return 0
     fi
-    # 不再用 "PK" 魔数猜测 Office：任意 zip（crx/jar/普通压缩包）都符合 PK，
-    # 误判后会把二进制当文档解析；仅依 Content-Type / 扩展名判定 Office。
+    # 仅 "PK" 魔数不足以判定 Office（crx/jar/普通 zip 也以 PK 开头），
+    # 因此要求 zip 内同时存在 OOXML 的 [Content_Types].xml 与 word/xl/ppt 目录，
+    # 这样无扩展名/octet-stream 的真实 Office 文件也能被识别，又不会误吞普通压缩包。
+    if head -c 2 "$path" 2>/dev/null | grep -q 'PK'; then
+        if "$PYTHON_BIN" -c 'import sys,zipfile
+try:
+    names = set(zipfile.ZipFile(sys.argv[1]).namelist())
+except Exception:
+    sys.exit(1)
+ok = "[Content_Types].xml" in names and any(n.startswith(("word/", "xl/", "ppt/")) for n in names)
+sys.exit(0 if ok else 1)' "$path"; then
+            return 0
+        fi
+    fi
     return 1
 }
 

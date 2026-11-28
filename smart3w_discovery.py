@@ -16,14 +16,28 @@ from bs4 import BeautifulSoup
 from smart3w_url_utils import normalize_url
 
 
-def same_site(candidate: str, root: str, include_subdomains: bool = True) -> bool:
-    """判断 candidate 是否与 root 同站；默认允许子域名。"""
+def _effective_port(parts: urllib.parse.SplitResult) -> int:
     try:
-        c_host = (urllib.parse.urlsplit(candidate).hostname or "").strip().lower().rstrip(".")
-        r_host = (urllib.parse.urlsplit(root).hostname or "").strip().lower().rstrip(".")
+        port = parts.port
+    except ValueError:
+        return -1
+    if port is not None:
+        return port
+    return 443 if parts.scheme.lower() == "https" else 80
+
+
+def same_site(candidate: str, root: str, include_subdomains: bool = True) -> bool:
+    """判断 candidate 是否与 root 同站；默认允许子域名，但端口必须一致。"""
+    try:
+        c_parts = urllib.parse.urlsplit(candidate)
+        r_parts = urllib.parse.urlsplit(root)
+        c_host = (c_parts.hostname or "").strip().lower().rstrip(".")
+        r_host = (r_parts.hostname or "").strip().lower().rstrip(".")
     except ValueError:
         return False
     if not c_host or not r_host:
+        return False
+    if _effective_port(c_parts) != _effective_port(r_parts):
         return False
     if c_host == r_host:
         return True

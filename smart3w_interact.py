@@ -363,38 +363,65 @@ def _max_interact_seconds() -> int:
     return max(10, value)
 
 
+_ALLOWED_NON_HTTP_SCHEMES = ("data", "blob", "about")
+
+
 def _install_request_guard(target, blocked_errors: list[str]):
-    """所有浏览器请求都过 SSRF/allowlist；非 http(s) 资源放行。
+    """所有浏览器请求都过 SSRF/allowlist；非 http(s) 仅允许 data/blob/about。
 
     target 可以是 Page，也可以是 BrowserContext（推荐：context.route 能同时
     覆盖点击打开的新页面与弹窗），二者都提供 route(pattern, handler)。
+    同时安装 WebSocket 路由守卫，避免 wss/ws 连接绕过 HTTP 策略。
     """
     policy_cache: dict[tuple[str, str], str | None] = {}
+
+    def _policy_blocked(url: str, scheme: str) -> str | None:
+        check_url = url
+        if scheme in ("ws", "wss"):
+            check_url = ("https" if scheme == "wss" else "http") + url[len(scheme):]
+        shape_error = url_shape_error(check_url)
+        if shape_error:
+            return shape_error
+        parsed = urlsplit(check_url)
+        key = (parsed.scheme.lower(), parsed.netloc.lower())
+        if key not in policy_cache:
+            policy_cache[key] = url_policy_error(check_url)
+        return policy_cache[key]
+
+    def _record(url: str, error: str) -> None:
+        if len(blocked_errors) < 20:
+            blocked_errors.append(f"{url}: {error}")
 
     def guard(route):
         request = route.request
         url = request.url
-        if not url.lower().startswith(("http://", "https://")):
-            return route.continue_()
-        # 每个请求都做形状校验：长度、控制字符、端口、userinfo 不能随 origin 缓存
-        shape_error = url_shape_error(url)
-        if shape_error:
-            if len(blocked_errors) < 20:
-                blocked_errors.append(f"{url}: {shape_error}")
+        scheme = url.split(":", 1)[0].lower() if ":" in url else ""
+        if scheme not in ("http", "https", "ws", "wss"):
+            if scheme in _ALLOWED_NON_HTTP_SCHEMES:
+                return route.continue_()
+            _record(url, f"禁止的请求 scheme: {scheme or '(empty)'}")
             return route.abort("blockedbyclient")
-        parsed = urlsplit(url)
-        # 不能只按 hostname 缓存：同 host 不同端口/凭据的请求策略可能不同
-        key = (parsed.scheme.lower(), parsed.netloc.lower())
-        if key not in policy_cache:
-            policy_cache[key] = url_policy_error(url)
-        blocked = policy_cache[key]
+        blocked = _policy_blocked(url, scheme)
         if blocked:
-            if len(blocked_errors) < 20:
-                blocked_errors.append(f"{url}: {blocked}")
+            _record(url, blocked)
             return route.abort("blockedbyclient")
         return route.continue_()
 
+    async def websocket_guard(ws):
+        url = getattr(ws, "url", "")
+        scheme = url.split(":", 1)[0].lower() if ":" in url else ""
+        blocked = _policy_blocked(url, scheme)
+        if blocked:
+            _record(url, blocked)
+            await ws.close(code=1008, reason="blocked by smart3w url policy")
+            return
+        ws.connect_to_server()
+
     target.route("**/*", guard)
+    try:
+        target.route_web_socket("**/*", websocket_guard)
+    except Exception:  # noqa: BLE001 - 老版本 Playwright 无 WS 路由时降级为仅 HTTP 守卫
+        pass
 
 
 def _execute_actions(
